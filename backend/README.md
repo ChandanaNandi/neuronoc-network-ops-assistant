@@ -42,6 +42,8 @@ Endpoints:
 - `POST /api/incidents/{id}/recommendations` — attach recommendation
 - `POST /api/simulator/seed?scenario=all|<name>` — seed simulated incidents
 - `POST /api/simulator/reset` — remove all simulator-created incidents
+- `GET /api/anomalies/incidents/{id}` — run rule engine against one incident (404 if missing)
+- `GET /api/anomalies/open?limit=50` — run engine against all open incidents (limit 1–100)
 
 Interactive docs at `/docs` once running.
 
@@ -60,6 +62,34 @@ uv run python -m app.simulator.seed --reset
 - `reset_simulator_data` deletes incidents whose `summary` starts with `[simulator]`; the FK `ON DELETE CASCADE` removes children. Devices are preserved.
 
 Scenarios are defined in `app/simulator/scenarios.py` as pure data — adding a new one means appending a dict to `SCENARIOS`, nothing more.
+
+## Anomaly engine (Phase 4)
+
+Deterministic rule set in `app/anomaly/rules.py`. Engine entry points live in `app/anomaly/engine.py`:
+
+- `analyze_incident(db, incident_id)` — load one incident's events + evidence, run every rule, return `list[AnomalyFinding]`. Raises `IncidentNotFoundError` if the id is unknown.
+- `analyze_open_incidents(db, limit=50)` — flat list of findings across the most-recent N open incidents.
+
+CLI:
+
+```bash
+uv run python -m app.anomaly.engine --incident-id <uuid>
+uv run python -m app.anomaly.engine --open --limit 50
+```
+
+Both modes print a JSON array of findings to stdout. The engine is **read-only**; no findings are persisted. Phase 5 will introduce `agent_runs` for that.
+
+Rules currently shipped (7):
+
+| Rule ID | Rule name | Trigger |
+|---|---|---|
+| R001 | `bgp_neighbor_down_detected` | `event_type=bgp_state_change` AND `payload.after == "Idle"` |
+| R002 | `route_withdrawal_detected` | `event_type=route_withdrawal` OR `payload.metric_name == "withdrawn_prefixes"` with value > 0 |
+| R003 | `interface_error_spike_detected` | `payload.metric_name == "input_errors_per_min"` with value > 50 |
+| R004 | `packet_loss_detected` | `payload.metric_name` ∈ {`packet_loss_percent`, `loss_pct`, `loss_percent`} with value > 1 |
+| R005 | `latency_spike_detected` | `payload.metric_name` ∈ {`latency_ms`, `rtt_ms`} with value > 100 |
+| R006 | `acl_deny_spike_detected` | `event_type=traffic_denied` OR `payload.metric_name == "acl_deny_hits"` with value > 0 |
+| R007 | `route_missing_detected` | `event_type=route_missing` OR evidence `payload.result == "not_in_table"` |
 
 ## Test
 

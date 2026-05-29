@@ -2,17 +2,17 @@
 
 NeuroNOC is an open-source multi-agent AI NetOps platform for network anomaly detection, root-cause analysis, validation, and remediation planning.
 
-## Phase 3 scope *(current)*
+## Phase 4 scope *(current)*
 
-Deterministic **collector simulator** that seeds realistic, fake-but-structured network incident data into the Postgres database. This is **simulated data, not a real collector** — no SNMP, no syslog ingest, no device polling. Later phases will replace this with the real telemetry pipeline.
+A **deterministic rule-based anomaly engine** that reads incident events / evidence from Postgres and emits structured `AnomalyFinding` objects. **No ML, no LLM, no learned weights.** This is the contract surface the multi-agent orchestrator will consume in Phase 5.
 
-- 4 simulator devices (edge-1, edge-2, core-1, branch-1) seeded idempotently by hostname.
-- 5 scenarios: `bgp_neighbor_down`, `interface_errors_spike`, `latency_spike`, `route_missing`, `acl_blocking_traffic`. Each writes 1 incident + 2–3 events + 2–3 evidence rows + 1 recommendation with realistic JSONB payloads (device, interface, neighbor, prefix, before/after, metric_name, etc.).
-- CLI: `uv run python -m app.simulator.seed --scenario all|<name>|--reset`.
-- Optional API: `POST /api/simulator/seed?scenario=…` and `POST /api/simulator/reset`.
-- Every simulator-created row is **tagged** (`[simulator]` in `Incident.summary`, `_origin: simulator` in JSONB payloads, `simulator:<device>` in `source`), so `--reset` removes only simulator data and leaves operator-created incidents alone.
+- 7 rules covering BGP-down, route withdrawal, interface error spikes, packet loss, latency spike, ACL deny spikes, and missing routes.
+- Findings carry: `rule_id`, `rule_name`, `severity`, `confidence`, `incident_id`, `incident_type`, `summary`, `evidence_refs`, `recommended_next_step`.
+- Phase 4 is **read-only** — no new DB tables, no persistence of findings. Agent-run persistence lands in Phase 5.
+- API: `GET /api/anomalies/incidents/{id}` and `GET /api/anomalies/open?limit=50` (max 100).
+- CLI: `uv run python -m app.anomaly.engine --incident-id <uuid>` and `--open --limit 50`.
 
-Phases 0–2 (env audit, scaffold, schema) remain intact. See `docs/roadmap.md` for what lands when.
+Phases 0–3 (env audit, scaffold, schema, simulator) remain intact. See `docs/roadmap.md` for what lands when.
 
 ## Repo layout
 
@@ -118,6 +118,31 @@ curl -X POST  http://127.0.0.1:8000/api/simulator/reset
 
 **Important:** this is fabricated data for development. Real telemetry collection (SNMP, syslog, streaming) lands in a later phase.
 
+## Run the anomaly engine (Phase 4)
+
+CLI:
+
+```bash
+cd backend
+
+# one incident (get the id from the simulator output, or `GET /api/incidents`)
+uv run python -m app.anomaly.engine --incident-id <uuid>
+
+# every currently-open incident
+uv run python -m app.anomaly.engine --open --limit 50
+```
+
+Output is a JSON array of `AnomalyFinding` objects (rule_id, rule_name, severity, confidence, summary, evidence_refs, recommended_next_step).
+
+HTTP:
+
+```bash
+curl -s http://127.0.0.1:8000/api/anomalies/open?limit=50 | jq .
+curl -s http://127.0.0.1:8000/api/anomalies/incidents/<uuid> | jq .
+```
+
+The engine is **deterministic and rule-based** — no ML. Findings are *not* persisted anywhere; they are recomputed on every request from the underlying incident / event / evidence rows.
+
 ## Run the frontend
 
 ```bash
@@ -148,7 +173,7 @@ Environment variables exported in your shell always override values from `.env`.
 ## Intentionally NOT implemented yet
 
 - **Real** telemetry collection (SNMP / syslog / streaming) — Phase 3 ships synthetic data only
-- Anomaly detection (Phase 4)
+- ML / learned anomaly detection — Phase 4 ships deterministic rules only
 - LangGraph multi-agent orchestration (Phase 5)
 - Ollama / RAG integration (Phase 6)
 - Ansible / remediation execution (Phase 7) — recommendation rows can be stored, but nothing is applied to real devices

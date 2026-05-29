@@ -20,20 +20,20 @@ Phases are sequential. Each phase is reviewed and approved before the next begin
 - REST endpoints: incident CRUD + event / evidence / recommendation sub-resources, paginated list (newest first).
 - Deferred to later phases: `interfaces`, `metrics_raw`, `agent_runs`, `agent_messages`.
 
-## Phase 3 — Collector simulator *(current)*
+## Phase 3 — Collector simulator ✓
 
 - Deterministic synthetic incident generator in `app/simulator/` — **not a real collector**, no SNMP / syslog / streaming.
-- 4 simulator devices seeded idempotently: `edge-1`, `edge-2`, `core-1`, `branch-1` (all `frrouting`).
-- 5 scenarios: `bgp_neighbor_down`, `interface_errors_spike`, `latency_spike`, `route_missing`, `acl_blocking_traffic`. Each writes 1 incident + 2–3 events + 2–3 evidence rows + 1 recommendation with realistic JSONB payloads (device/interface/neighbor/prefix/before/after/metric_name/metric_value/unit/observed_at).
-- CLI `python -m app.simulator.seed --scenario all|<name>|--reset` and matching optional API at `/api/simulator/{seed,reset}`.
-- Every simulator row is tagged (`[simulator]` prefix in `Incident.summary`, `_origin=simulator` in payloads); `--reset` deletes only those rows and never touches operator-created incidents or seeded devices.
-- Deferred: actual telemetry ingest, `metrics_raw` time-series, time-series sanity views — those land alongside the real collector in a later sub-phase.
+- 4 simulator devices, 5 scenarios, CLI + optional API, surgical reset.
 
-## Phase 4 — Anomaly engine
+## Phase 4 — Anomaly engine *(current)*
 
-- Rule + statistical detectors (z-score, EWMA, threshold breach).
-- Detector output writes `events` → groups into `incidents`.
-- Backpressure-safe ingest loop.
+- Deterministic rule-based engine in `app/anomaly/` — **no ML, no LLM, no learned weights**.
+- 7 rules (`R001`–`R007`) cover BGP down, route withdrawal, interface error spike, packet loss, latency spike, ACL deny spike, route missing.
+- `AnomalyFinding` is a Pydantic model with `rule_id`, `rule_name`, `severity`, `confidence`, `incident_id`, `incident_type`, `summary`, `evidence_refs`, `recommended_next_step`.
+- Engine entry points: `analyze_incident(db, incident_id)` and `analyze_open_incidents(db, limit)`. Read-only — findings are recomputed per request and **not persisted** (that lands in Phase 5).
+- HTTP: `GET /api/anomalies/incidents/{id}` (404 on miss), `GET /api/anomalies/open?limit=50` (max 100).
+- CLI: `python -m app.anomaly.engine --incident-id <uuid>|--open [--limit N]`, prints JSON.
+- Deferred to later phases: statistical detectors (z-score, EWMA), windowing / time-series detection, ML / learned models, persistence of findings, backpressure-safe ingest loop (those arrive with the real collector).
 
 ## Phase 5 — LangGraph multi-agent orchestration
 
