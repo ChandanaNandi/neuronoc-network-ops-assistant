@@ -11,19 +11,23 @@ Phases are sequential. Each phase is reviewed and approved before the next begin
 - `.env.example`, root docs.
 - Hardening: `.gitignore`, Python pinned to 3.12, cwd-independent config loader.
 
-## Phase 2 — Data model and incidents *(current)*
+## Phase 2 — Data model and incidents ✓
 
 - SQLAlchemy 2.x + Alembic migrations, psycopg 3 driver.
-- Tables shipped this phase: `devices`, `incidents`, `incident_events`, `incident_evidence`, `recommendations` (all UUID PKs, timestamped, JSONB payloads where useful).
-- Sync `Session` per request; transactional test fixture (savepoint-rolled-back) so tests share the dev DB without polluting it.
+- Tables shipped: `devices`, `incidents`, `incident_events`, `incident_evidence`, `recommendations` (UUID PKs, timestamped, JSONB payloads).
+- DB-level defaults (`gen_random_uuid()`, `incidents.status='open'`, `recommendations.requires_approval=true`).
+- Sync `Session` per request; savepoint-rolled-back test fixture against real Postgres.
 - REST endpoints: incident CRUD + event / evidence / recommendation sub-resources, paginated list (newest first).
-- Deferred to later phases (call these out explicitly): `interfaces`, `metrics_raw`, `agent_runs`, `agent_messages`. Frontend still shows the static dashboard — wiring it to live incident data is the next sub-task before Phase 3.
+- Deferred to later phases: `interfaces`, `metrics_raw`, `agent_runs`, `agent_messages`.
 
-## Phase 3 — Collector simulator
+## Phase 3 — Collector simulator *(current)*
 
-- Synthetic SNMP/syslog generator (Python).
-- Ingest endpoint that writes to `metrics_raw` / `events`.
-- Time-series sanity views.
+- Deterministic synthetic incident generator in `app/simulator/` — **not a real collector**, no SNMP / syslog / streaming.
+- 4 simulator devices seeded idempotently: `edge-1`, `edge-2`, `core-1`, `branch-1` (all `frrouting`).
+- 5 scenarios: `bgp_neighbor_down`, `interface_errors_spike`, `latency_spike`, `route_missing`, `acl_blocking_traffic`. Each writes 1 incident + 2–3 events + 2–3 evidence rows + 1 recommendation with realistic JSONB payloads (device/interface/neighbor/prefix/before/after/metric_name/metric_value/unit/observed_at).
+- CLI `python -m app.simulator.seed --scenario all|<name>|--reset` and matching optional API at `/api/simulator/{seed,reset}`.
+- Every simulator row is tagged (`[simulator]` prefix in `Incident.summary`, `_origin=simulator` in payloads); `--reset` deletes only those rows and never touches operator-created incidents or seeded devices.
+- Deferred: actual telemetry ingest, `metrics_raw` time-series, time-series sanity views — those land alongside the real collector in a later sub-phase.
 
 ## Phase 4 — Anomaly engine
 

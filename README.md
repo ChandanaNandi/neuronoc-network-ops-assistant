@@ -2,18 +2,17 @@
 
 NeuroNOC is an open-source multi-agent AI NetOps platform for network anomaly detection, root-cause analysis, validation, and remediation planning.
 
-## Phase 2 scope *(current)*
+## Phase 3 scope *(current)*
 
-Database foundation and incident CRUD APIs — still no agents, LLM calls, anomaly detection, or network automation.
+Deterministic **collector simulator** that seeds realistic, fake-but-structured network incident data into the Postgres database. This is **simulated data, not a real collector** — no SNMP, no syslog ingest, no device polling. Later phases will replace this with the real telemetry pipeline.
 
-- SQLAlchemy 2.x models: `devices`, `incidents`, `incident_events`, `incident_evidence`, `recommendations` (all UUID PKs, JSONB payload columns).
-- Alembic migrations driven from `app.db.models.Base.metadata` (autogenerate-friendly).
-- psycopg 3 driver (`postgresql+psycopg://...`).
-- Synchronous SQLAlchemy `Session` (async deferred).
-- REST endpoints under `/api/incidents` for create, list, fetch by id, plus sub-resources for events / evidence / recommendations.
-- Tests run against the **real Docker Postgres** with savepoint-rolled-back transactions, so dev data is never polluted.
+- 4 simulator devices (edge-1, edge-2, core-1, branch-1) seeded idempotently by hostname.
+- 5 scenarios: `bgp_neighbor_down`, `interface_errors_spike`, `latency_spike`, `route_missing`, `acl_blocking_traffic`. Each writes 1 incident + 2–3 events + 2–3 evidence rows + 1 recommendation with realistic JSONB payloads (device, interface, neighbor, prefix, before/after, metric_name, etc.).
+- CLI: `uv run python -m app.simulator.seed --scenario all|<name>|--reset`.
+- Optional API: `POST /api/simulator/seed?scenario=…` and `POST /api/simulator/reset`.
+- Every simulator-created row is **tagged** (`[simulator]` in `Incident.summary`, `_origin: simulator` in JSONB payloads, `simulator:<device>` in `source`), so `--reset` removes only simulator data and leaves operator-created incidents alone.
 
-Phase 1 (scaffold) and Phase 0 (env audit) remain intact. See `docs/roadmap.md` for what lands when.
+Phases 0–2 (env audit, scaffold, schema) remain intact. See `docs/roadmap.md` for what lands when.
 
 ## Repo layout
 
@@ -98,6 +97,27 @@ uv run pytest -q
 
 Tests run against the real Postgres but wrap each test in a transaction that is rolled back at the end, so they never persist data into your dev database.
 
+## Seed simulated incidents (Phase 3)
+
+```bash
+cd backend
+
+uv run python -m app.simulator.seed --scenario all              # seed all 5 scenarios
+uv run python -m app.simulator.seed --scenario bgp_neighbor_down # seed one
+uv run python -m app.simulator.seed --reset                      # remove simulator data
+```
+
+Or via the API (after starting the backend):
+
+```bash
+curl -X POST 'http://127.0.0.1:8000/api/simulator/seed?scenario=all'
+curl -X POST  http://127.0.0.1:8000/api/simulator/reset
+```
+
+`--reset` only deletes incidents that the simulator created (marked `[simulator]` in `summary`). It leaves the four simulator devices in place and does not touch any operator-created incidents. There is no `--reset-devices` flag yet; if you ever need to start over, delete the devices manually via `psql`.
+
+**Important:** this is fabricated data for development. Real telemetry collection (SNMP, syslog, streaming) lands in a later phase.
+
 ## Run the frontend
 
 ```bash
@@ -127,7 +147,7 @@ Environment variables exported in your shell always override values from `.env`.
 
 ## Intentionally NOT implemented yet
 
-- Telemetry / collector simulator (Phase 3)
+- **Real** telemetry collection (SNMP / syslog / streaming) — Phase 3 ships synthetic data only
 - Anomaly detection (Phase 4)
 - LangGraph multi-agent orchestration (Phase 5)
 - Ollama / RAG integration (Phase 6)

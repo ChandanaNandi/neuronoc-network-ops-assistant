@@ -40,8 +40,26 @@ Endpoints:
 - `POST /api/incidents/{id}/events` — append event
 - `POST /api/incidents/{id}/evidence` — attach evidence
 - `POST /api/incidents/{id}/recommendations` — attach recommendation
+- `POST /api/simulator/seed?scenario=all|<name>` — seed simulated incidents
+- `POST /api/simulator/reset` — remove all simulator-created incidents
 
 Interactive docs at `/docs` once running.
+
+## Simulator
+
+The Phase 3 simulator lives in `app/simulator/`. CLI:
+
+```bash
+uv run python -m app.simulator.seed --scenario all
+uv run python -m app.simulator.seed --scenario bgp_neighbor_down
+uv run python -m app.simulator.seed --reset
+```
+
+- `ensure_devices` is idempotent on the unique `hostname` column.
+- `apply_scenario` writes one Incident + N events + N evidence + 1 recommendation.
+- `reset_simulator_data` deletes incidents whose `summary` starts with `[simulator]`; the FK `ON DELETE CASCADE` removes children. Devices are preserved.
+
+Scenarios are defined in `app/simulator/scenarios.py` as pure data — adding a new one means appending a dict to `SCENARIOS`, nothing more.
 
 ## Test
 
