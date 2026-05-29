@@ -59,8 +59,29 @@ Phases are sequential. Each phase is reviewed and approved before the next begin
 
 ## Phase 8 — Network lab integration
 
-- Containerlab topology with FRR (and SR Linux where arm64 permits).
-- End-to-end: simulated fault → detector → RCA → validation → remediation plan → applied to lab.
+### Phase 8A — readiness audit ✓
+
+- Read-only host audit picked Compose over Containerlab/Lima for the M4 / disk / arm64 budget.
+
+### Phase 8B — Compose FRR mini-lab ✓
+
+- 4 FRR v8.4.1 routers (edge-1, edge-2, core-1, branch-1) on dedicated `neuronoc_lab_*` bridges.
+- eBGP fully Established; loopbacks advertised; `lab.sh` helper for `up`/`down`/`ps`/`logs`/`cli`/`bgp`.
+- `pull_policy: never` so the lab refuses to silently pull a different FRR version.
+
+### Phase 8C — one-shot BGP collector *(current)*
+
+- `app/lab/collector.py` scrapes the four lab routers via `docker exec` + `vtysh -c "show ip bgp summary json"` (read-only only).
+- Persists into the **existing** `Incident` / `IncidentEvent` schema - no migration.
+- One `Incident` per invocation, tagged `[lab-collector]` in `summary`; events: `lab_bgp_peer_established`, `lab_bgp_peer_not_established`, `lab_bgp_prefix_snapshot`, `lab_bgp_collection_error`.
+- Severity derived: low (all good) / medium (some peers down) / high (any collection error).
+- HTTP: `POST /api/lab/collect/bgp` (synchronous, 201). CLI: `python -m app.lab.collector --collect`.
+- One-shot only - no background daemon, no scheduler, no continuous ingest. That arrives if and when the project needs streaming telemetry.
+
+### Later sub-phases (deferred)
+
+- Containerlab topology (when veth pairs, L2 trunks, or multi-vendor are actually needed).
+- End-to-end loop: lab fault → detector → RCA → validation → plan → human-approved apply.
 - Lima fallback for x86_64-only network images.
 
 ## Beyond

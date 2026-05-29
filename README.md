@@ -2,7 +2,20 @@
 
 NeuroNOC is an open-source multi-agent AI NetOps platform for network anomaly detection, root-cause analysis, validation, and remediation planning.
 
-## Phase 7 scope *(current)*
+## Phase 8C scope *(current)*
+
+**One-shot collector** that scrapes the Phase 8B FRR Compose lab over `docker exec` + `vtysh -c "show ... json"` and writes the BGP state into the existing `Incident` / `IncidentEvent` tables. **No schema change.** No background daemon, no scheduler, no loop — each invocation produces one fresh tagged `Incident` plus one `IncidentEvent` per peer (plus an aggregate snapshot event per router, plus a `lab_bgp_collection_error` event for any router we couldn't reach).
+
+- Read-only towards the lab: only `show ip bgp summary json`. No `clear`, no `conf t`, no config edits.
+- Per-collection `Incident.summary` is prefixed `[lab-collector]` so it can be filtered separately from operator-created incidents and Phase 3 simulator data.
+- Event types: `lab_bgp_peer_established`, `lab_bgp_peer_not_established`, `lab_bgp_prefix_snapshot` (one per router), `lab_bgp_collection_error` (one per unreachable router).
+- Incident severity derived: `low` if every peer is Established, `medium` if any peer is not, `high` if any router could not be scraped.
+- API: `POST /api/lab/collect/bgp` (sync; returns a `LabBgpCollectionSummary`).
+- CLI: `uv run python -m app.lab.collector --collect` (prints the same summary as JSON).
+
+Phases 0–8B remain intact. See `docs/roadmap.md` for what lands when.
+
+## Phase 7 scope
 
 **Remediation plan generation — DRAFTS ONLY, never executed.** Turns a Phase 5 incident analysis (and optional Phase 6 RCA) into a structured `RemediationPlan` with pre-checks, proposed commands, an Ansible playbook draft, post-checks, rollback steps, validation criteria, and safety notes. **Every plan is hard-pinned `requires_approval=True`. Nothing is run.**
 
@@ -216,6 +229,29 @@ Notes:
 - The explainer **never** executes a remediation action. Every actionable step is gated on explicit human approval.
 - Ollama is required to run on the **host** (Apple Metal GPU); containerized Ollama on macOS is CPU-only and ~10–20× slower.
 
+## Collect from the FRR lab (Phase 8C, one-shot)
+
+Bring the Phase 8B lab up first (`./infra/lab/scripts/lab.sh up`), then:
+
+```bash
+cd backend
+
+# One synchronous collection. Prints a JSON summary; writes one Incident +
+# per-peer events to Postgres.
+uv run python -m app.lab.collector --collect
+```
+
+HTTP:
+
+```bash
+# Equivalent to the CLI; returns the same summary shape.
+curl -s -X POST http://127.0.0.1:8000/api/lab/collect/bgp | jq .
+```
+
+Each invocation creates a fresh `Incident` tagged `[lab-collector]` plus one `IncidentEvent` per peer. Re-running gives you another fresh row — there is no background ingester yet, that is intentionally out of scope.
+
+The collector calls `docker exec neuronoc-lab-<router> vtysh -c "show ip bgp summary json"`; it never touches a config-changing command. If a router is down or its output isn't JSON, you get a `lab_bgp_collection_error` event instead of a crash.
+
 ## Generate a remediation plan (Phase 7, plan-only)
 
 CLI:
@@ -289,4 +325,4 @@ Environment variables exported in your shell always override values from `.env`.
 
 ## License & status
 
-Pre-alpha, open-source. Phases 1–7 implemented (scaffold, schema, simulator, anomaly engine, deterministic LangGraph orchestration, local-Ollama RCA explanation with deterministic fallback, plan-only remediation drafts with approval + rollback). Not yet usable for real network operations — no real telemetry collection, no remediation execution.
+Pre-alpha, open-source. Phases 1–8C implemented (scaffold, schema, simulator, anomaly engine, deterministic LangGraph orchestration, local-Ollama RCA explanation with deterministic fallback, plan-only remediation drafts with approval + rollback, Compose FRR network lab + one-shot BGP collector). Not yet usable for real network operations — no continuous telemetry pipeline, no remediation execution, no production lab.

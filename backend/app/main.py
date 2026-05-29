@@ -4,6 +4,7 @@ from app.api.agents import router as agents_router
 from app.api.anomalies import router as anomalies_router
 from app.api.health import router as health_router
 from app.api.incidents import router as incidents_router
+from app.api.lab import router as lab_router
 from app.api.rca import router as rca_router
 from app.api.remediation import router as remediation_router
 from app.api.simulator import router as simulator_router
@@ -17,6 +18,7 @@ app.include_router(anomalies_router)
 app.include_router(agents_router)
 app.include_router(rca_router)
 app.include_router(remediation_router)
+app.include_router(lab_router)
 
 
 @app.get("/")

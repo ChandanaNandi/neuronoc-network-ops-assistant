@@ -50,6 +50,7 @@ Endpoints:
 - `POST /api/rca/incidents/{id}/explain[?model=…&require_llm=true]` — Phase 6 RCA explanation (Ollama-backed when reachable, deterministic fallback otherwise; 503 if `require_llm=true` and Ollama is down)
 - `POST /api/remediation/incidents/{id}/plan` — generate **and persist** a Phase 7 draft `RemediationPlan` (404 if incident missing)
 - `GET /api/remediation/incidents/{id}/plans?limit=20` — list previously persisted plans for an incident, newest first (404 if incident missing)
+- `POST /api/lab/collect/bgp` — Phase 8C: one-shot BGP collection from the Compose FRR lab (writes one tagged `Incident` + per-peer events; requires the Phase 8B lab to be running)
 
 Interactive docs at `/docs` once running.
 
@@ -175,6 +176,34 @@ uv run python -m app.remediation.planner --incident-id <uuid> [--persist | --no-
 ```
 
 Default is `--persist` (matches the API's behaviour).
+
+## FRR lab collector (Phase 8C — one-shot)
+
+`app/lab/collector.py` scrapes the Phase 8B Compose lab and persists one `Incident` per invocation into the existing schema (no migration). One-shot only — no daemon, no scheduler.
+
+Entry point:
+
+- `collect_lab_bgp_snapshot(db, *, runner=None, routers=None) -> LabBgpCollectionSummary`. The `runner` parameter is a `Callable[[list[str]], tuple[stdout, stderr, returncode]]` and defaults to a `subprocess.run`-backed implementation; tests inject a fake to avoid touching live Docker.
+
+Each invocation:
+
+- creates a new `Incident` whose `summary` starts with `[lab-collector]`
+- writes one `IncidentEvent` per (router, peer): `lab_bgp_peer_established` or `lab_bgp_peer_not_established`
+- writes one `lab_bgp_prefix_snapshot` per successfully-scraped router (carries router_id, local_as, peer_count)
+- writes one `lab_bgp_collection_error` per unreachable / malformed router
+- sets incident severity: `low` (all good) / `medium` (some peers not Established) / `high` (any collection error)
+
+CLI:
+
+```bash
+uv run python -m app.lab.collector --collect
+```
+
+HTTP:
+
+- `POST /api/lab/collect/bgp` → `LabBgpCollectionSummary` (synchronous, 201).
+
+Read-only safety: the collector only runs `vtysh -c "show ip bgp summary json"`. No config-changing commands, no `clear`, no `conf t`.
 
 ## Test
 
