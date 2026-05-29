@@ -92,8 +92,44 @@ This is the full path for a visual walk-through of every UI section.
     # Ctrl-C the backend + frontend dev servers
     ```
 
+## End-to-end browser tests (Phase 12A)
+
+A small Playwright smoke suite lives under `e2e/`. Run it once you've completed the prerequisites below.
+
+One-time setup (downloads ~100 MB of Chromium):
+
+```bash
+pnpm install
+pnpm exec playwright install chromium
+```
+
+Run the suite:
+
+```bash
+pnpm test:e2e              # headless
+pnpm test:e2e:headed       # watch it in a real window
+```
+
+What it covers (7 tests, serial, single worker):
+
+1. App loads and all 5 status cards render.
+2. Incident list renders the 5 seeded scenarios.
+3. BGP incident detail shows findings, events, evidence, and human-readable evidence refs (`evt:` / `ev:`).
+4. `Run agent analysis` adds a new agent-run card.
+5. `Generate remediation plan` adds a new plan card.
+6. Approve a plan via the native `window.prompt` flow and verify the approved badge + operator + note land on the card.
+7. `Generate RCA` shows an RCA explanation and the section survives once it appears (live Ollama or deterministic fallback, both fine).
+
+Prerequisites the suite assumes:
+
+- Docker Postgres on `:5433` (Phase 1 stack: `docker compose up -d postgres`).
+- Backend deps installed: `cd backend && uv sync`.
+- `uv` on PATH (used by globalSetup/teardown to seed/reset the simulator).
+- No external lab / Ollama dependency; the spec falls back cleanly when Ollama is unreachable.
+
+Playwright auto-starts both dev servers via `webServer` in `playwright.config.ts`, runs `--reset` then `--scenario all` via `globalSetup`, executes the suite, then `--reset` again via `globalTeardown` so the dev database is left as it was found.
+
 ## What's not implemented yet
 
-- No browser tests (Playwright). Click-through verification is currently manual.
 - No router — single-screen tool.
-- No remediation execution, no approval workflow, no continuous ingest. See `docs/roadmap.md` in the project root.
+- No remediation execution path, no continuous ingest. See `docs/roadmap.md` in the project root.
