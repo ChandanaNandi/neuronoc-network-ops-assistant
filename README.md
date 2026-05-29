@@ -2,19 +2,18 @@
 
 NeuroNOC is an open-source multi-agent AI NetOps platform for network anomaly detection, root-cause analysis, validation, and remediation planning.
 
-## Phase 6 scope *(current)*
+## Phase 7 scope *(current)*
 
-**Optional local-LLM RCA explanation, with deterministic fallback.** A small bundled runbook knowledge base + keyword retrieval + a thin Ollama client produce a structured `RCAExplanation` for an incident. **If Ollama is unavailable, the explainer falls back to a deterministic explanation built from the Phase 5 report — nothing crashes, nothing blocks.**
+**Remediation plan generation — DRAFTS ONLY, never executed.** Turns a Phase 5 incident analysis (and optional Phase 6 RCA) into a structured `RemediationPlan` with pre-checks, proposed commands, an Ansible playbook draft, post-checks, rollback steps, validation criteria, and safety notes. **Every plan is hard-pinned `requires_approval=True`. Nothing is run.**
 
-- Local Ollama only (`http://localhost:11434` by default). **No OpenAI, Anthropic, or cloud LLM packages added.**
-- Retrieval: deterministic keyword scoring over 5 bundled Markdown runbooks (`bgp`, `interface_errors`, `latency_loss`, `route_missing`, `policy_acl`). **Not a vector store yet.**
-- Prompt explicitly constrains the model: *use only provided evidence and runbook snippets; do not invent commands, hostnames, interfaces, prefixes, vendors, or AS numbers*.
-- Output validated against a `RCAExplanation` Pydantic schema; if the model's JSON doesn't match, we fall back too.
-- API: `POST /api/rca/incidents/{id}/explain` with optional `?model=…&require_llm=true`.
-- CLI: `uv run python -m app.rca.explainer --incident-id <uuid> [--model …] [--require-llm]`.
-- New env vars: `OLLAMA_BASE_URL`, `OLLAMA_MODEL` (default `qwen2.5:7b-instruct`).
+- Plan-only: NO `subprocess`, NO `ansible_runner`, NO `netmiko`, NO `napalm`, NO device connections. A test scans `app/remediation/` and fails the build if any of those tokens are imported.
+- Reuses the existing `recommendations` table — **no schema change, no migration**. Plans are persisted as `Recommendation` rows with `recommendation_type="remediation_plan"`; the full structured plan is stored in `details` as a readable summary + fenced JSON block.
+- 5 specific templates + 1 default: `bgp_neighbor_down`, `interface_errors_spike`, `latency_spike`, `route_missing`, `acl_blocking_traffic`, plus a generic fallback that explicitly demands manual investigation.
+- Risky Ansible tasks are gated on `when: false` so the draft cannot run as-is even if someone forgets to read the comments.
+- API: `POST /api/remediation/incidents/{id}/plan` (creates + persists), `GET /api/remediation/incidents/{id}/plans` (lists persisted plans newest-first, limit 1–100).
+- CLI: `uv run python -m app.remediation.planner --incident-id <uuid> [--persist | --no-persist]`.
 
-Phases 0–5 remain intact. See `docs/roadmap.md` for what lands when.
+Phases 0–6 remain intact. See `docs/roadmap.md` for what lands when.
 
 ## Repo layout
 
@@ -217,6 +216,38 @@ Notes:
 - The explainer **never** executes a remediation action. Every actionable step is gated on explicit human approval.
 - Ollama is required to run on the **host** (Apple Metal GPU); containerized Ollama on macOS is CPU-only and ~10–20× slower.
 
+## Generate a remediation plan (Phase 7, plan-only)
+
+CLI:
+
+```bash
+cd backend
+
+# Generate + persist a draft plan (default).
+uv run python -m app.remediation.planner --incident-id <uuid>
+
+# Print without persisting.
+uv run python -m app.remediation.planner --incident-id <uuid> --no-persist
+```
+
+HTTP:
+
+```bash
+# Generate + persist; returns the structured RemediationPlan.
+curl -s -X POST 'http://127.0.0.1:8000/api/remediation/incidents/<uuid>/plan' | jq .
+
+# List previously-persisted plans for an incident, newest first.
+curl -s 'http://127.0.0.1:8000/api/remediation/incidents/<uuid>/plans?limit=20' | jq .
+```
+
+Hard safety contract:
+
+- **Nothing is ever executed.** The planner does not shell out, run Ansible, or open a device connection. A CI test parses every `.py` file under `app/remediation/` with the Python AST and fails the build if any actual `import` statement pulls in a remote-execution library (the list lives only in the test).
+- Every plan is `requires_approval=True` (re-asserted in the persistence layer as defence-in-depth).
+- Every plan includes pre-checks, post-checks, **rollback steps**, validation criteria, and safety notes.
+- The Ansible draft is non-executable: risky tasks carry `when: false` plus an explicit `REQUIRES APPROVED CHANGE WINDOW` comment.
+- The `interface_errors_spike` template explicitly does not propose a config change as the first action — observation comes first.
+
 ## Run the frontend
 
 ```bash
@@ -250,7 +281,7 @@ Environment variables exported in your shell always override values from `.env`.
 - ML / learned anomaly detection — Phase 4 ships deterministic rules only
 - Cloud LLMs (OpenAI / Anthropic / etc.) — Phase 6 ships local-Ollama only, with a deterministic fallback
 - Vector RAG — Phase 6 ships keyword retrieval over bundled Markdown runbooks
-- Ansible / remediation execution (Phase 7) — recommendation rows can be stored, but nothing is applied to real devices
+- Remediation **execution** — Phase 7 ships plan-only drafts. No Ansible run, no device contact, no automatic remediation. Approval and human application are required.
 - Containerlab network simulation (Phase 8)
 - Authentication / authorization
 - Async DB / queueing
@@ -258,4 +289,4 @@ Environment variables exported in your shell always override values from `.env`.
 
 ## License & status
 
-Pre-alpha, open-source. Phases 1–6 implemented (scaffold, schema, simulator, anomaly engine, deterministic LangGraph orchestration, local-Ollama RCA explanation with deterministic fallback). Not yet usable for real network operations — no real telemetry collection, no remediation execution.
+Pre-alpha, open-source. Phases 1–7 implemented (scaffold, schema, simulator, anomaly engine, deterministic LangGraph orchestration, local-Ollama RCA explanation with deterministic fallback, plan-only remediation drafts with approval + rollback). Not yet usable for real network operations — no real telemetry collection, no remediation execution.

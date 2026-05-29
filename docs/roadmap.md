@@ -38,25 +38,24 @@ Phases are sequential. Each phase is reviewed and approved before the next begin
 - HTTP: `POST /api/agents/incidents/{id}/analyze`, `GET /api/agents/runs/{id}`, `GET /api/agents/incidents/{id}/runs`.
 - CLI: `python -m app.agents.runner --incident-id <uuid>`.
 
-## Phase 6 — Ollama RCA explanation + keyword runbook retrieval *(current)*
+## Phase 6 — Ollama RCA explanation + keyword runbook retrieval ✓
 
-- Optional local-LLM explanation layer in `app/rca/`. **Local Ollama only** - no cloud-LLM packages.
-- `OLLAMA_BASE_URL` (default `http://localhost:11434`) and `OLLAMA_MODEL` (default `qwen2.5:7b-instruct`) added to settings + `.env.example`.
-- 5 Markdown runbooks bundled at `app/knowledge/runbooks/`; keyword scoring in `app/knowledge/retriever.py` (no vector store yet).
-- Thin Ollama client (`app/llm/ollama.py`) - all failure modes collapse to `OllamaUnavailableError`.
-- `RCAExplanation` Pydantic model with `summary`, `likely_root_cause`, `supporting_evidence`, `runbook_references`, `recommended_next_steps`, `unsafe_actions`, `confidence`, `model`, `llm_available`.
-- Prompt constrains the model: *use only provided evidence and runbook snippets; never invent commands / hostnames / prefixes / AS numbers*.
-- Graceful degradation: if Ollama is unreachable / mis-behaving, the explainer returns a deterministic fallback (`llm_available=False`) built from the Phase 5 report; `require_llm=True` opts into a 503 / nonzero-exit instead.
-- HTTP: `POST /api/rca/incidents/{id}/explain[?model=...&require_llm=true]`.
-- CLI: `python -m app.rca.explainer --incident-id <uuid> [--model ...] [--require-llm]`.
-- The explainer **never** executes remediation.
-- Deferred: vector embeddings + pgvector, multi-shot reasoning, agent-tool-calling, persistent RCAExplanation rows.
+- Optional local-LLM explanation layer in `app/rca/`. Local Ollama only.
+- Bundled Markdown runbooks + keyword retrieval (no vector store yet).
+- Graceful fallback when Ollama is unreachable; `require_llm=True` opts into 503 / non-zero exit.
+- HTTP `POST /api/rca/incidents/{id}/explain`, CLI `python -m app.rca.explainer --incident-id <uuid>`.
 
-## Phase 7 — Remediation planning
+## Phase 7 — Remediation planning *(current)*
 
-- Ansible playbook drafting (`--check` mode only by default).
-- Diff preview in UI; explicit human approval required to apply.
-- Rollback plan generation alongside every change.
+- Plan-only. **Nothing is executed.** A test scans `app/remediation/` and fails the build if any execution token (`subprocess`, `ansible_runner`, `netmiko`, `napalm`, `paramiko`, `pexpect`, `fabric`, `scrapli`) ever appears.
+- Reuses the existing `recommendations` table (no migration). Persisted plans use `recommendation_type="remediation_plan"`, `requires_approval=True` (re-asserted in the persistence layer), and store the full structured plan in `details` as a readable summary plus a fenced JSON block.
+- `RemediationPlan` Pydantic model: `incident_id`, `plan_type`, `title`, `risk`, `requires_approval`, `summary`, `pre_checks`, `proposed_commands`, `proposed_ansible_playbook`, `post_checks`, `rollback_steps`, `validation_criteria`, `safety_notes`, `source`, `confidence`.
+- 5 specific templates + 1 default: `bgp_neighbor_down`, `interface_errors_spike`, `latency_spike`, `route_missing`, `acl_blocking_traffic`, `generic_investigation`. Selection: incident_type first, then Phase 5 correlation theme, then default.
+- Ansible drafts gate every risky task on `when: false` plus a "REQUIRES APPROVED CHANGE WINDOW" comment so the file cannot run as-is.
+- `interface_errors_spike` deliberately leads with observation, never a config change.
+- HTTP: `POST /api/remediation/incidents/{id}/plan` (creates + persists), `GET /api/remediation/incidents/{id}/plans?limit=20` (lists persisted plans).
+- CLI: `python -m app.remediation.planner --incident-id <uuid> [--persist | --no-persist]`.
+- Deferred: any actual execution path, diff preview in the UI, change-management integration, plan signing / approval workflow.
 
 ## Phase 8 — Network lab integration
 

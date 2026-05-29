@@ -48,6 +48,8 @@ Endpoints:
 - `GET /api/agents/runs/{id}` — fetch one run + its steps (404 if missing)
 - `GET /api/agents/incidents/{id}/runs?limit=20` — list runs for an incident, newest first (limit 1–100)
 - `POST /api/rca/incidents/{id}/explain[?model=…&require_llm=true]` — Phase 6 RCA explanation (Ollama-backed when reachable, deterministic fallback otherwise; 503 if `require_llm=true` and Ollama is down)
+- `POST /api/remediation/incidents/{id}/plan` — generate **and persist** a Phase 7 draft `RemediationPlan` (404 if incident missing)
+- `GET /api/remediation/incidents/{id}/plans?limit=20` — list previously persisted plans for an incident, newest first (404 if incident missing)
 
 Interactive docs at `/docs` once running.
 
@@ -150,6 +152,29 @@ OLLAMA_MODEL=qwen2.5:7b-instruct
 ```
 
 The explainer **never** executes a remediation action. The fallback always includes the unsafe-actions guardrail line.
+
+## Remediation planner (Phase 7 — plan only, never executes)
+
+`app/remediation/` turns an incident into a structured `RemediationPlan`. Plans are drafts for human review.
+
+Modules:
+- `app/schemas/remediation.py` — `RemediationPlan` Pydantic model (incident_id, plan_type, title, risk, requires_approval, summary, pre_checks, proposed_commands, proposed_ansible_playbook, post_checks, rollback_steps, validation_criteria, safety_notes, source, confidence).
+- `app/remediation/templates.py` — six templates: `bgp_neighbor_down`, `interface_errors_spike`, `latency_spike`, `route_missing`, `acl_blocking_traffic`, and a default `generic_investigation` fallback. Template selection picks by `incident_type` first, then by Phase 5 correlation theme.
+- `app/remediation/planner.py` — `build_remediation_plan(db, incident_id) -> RemediationPlan` and `persist_remediation_recommendation(db, plan) -> Recommendation`.
+
+Persistence: reuses the existing `recommendations` table — **no migration**. Persisted rows have `recommendation_type="remediation_plan"`, `requires_approval=True` (hard-pinned in the persistence helper as defence-in-depth), and `details` formatted as a human-readable summary plus a fenced JSON block carrying the full structured plan.
+
+Hard safety contract enforced by `tests/test_remediation.py::test_remediation_package_blocks_execution_library_imports`: the test parses every `.py` file under `app/remediation/` with the Python AST and fails the build if any actual `import` statement pulls in a remote-execution library. The list of blocked libraries lives only in the test file - no production module under `app/remediation/` carries those names, even in comments.
+
+Ansible drafts gate every risky task on `when: false` so the file cannot run as-is even by accident.
+
+CLI:
+
+```bash
+uv run python -m app.remediation.planner --incident-id <uuid> [--persist | --no-persist]
+```
+
+Default is `--persist` (matches the API's behaviour).
 
 ## Test
 
