@@ -1,0 +1,145 @@
+# NeuroNOC Phase 8B - FRR mini-lab (Compose).
+#
+# IMPORTANT:
+# - This stack is INDEPENDENT of the main NeuroNOC stack. It uses its own
+#   networks and does not touch `neuronoc-postgres` or its volume.
+# - 4 FRR v8.4.1 routers (edge-1, edge-2, core-1, branch-1) with eBGP.
+# - Each link uses a /29 with the Docker bridge gateway parked at .6 so that
+#   .1 and .2 can hold the static router IPs requested by the design.
+# - Hostnames + loopback IPs intentionally match the Phase 3 simulator's
+#   device specs (app/simulator/scenarios.py), so a future collector can
+#   correlate live BGP state against simulated incidents.
+
+services:
+  edge-1:
+    image: frrouting/frr:v8.4.1
+    pull_policy: never
+    container_name: neuronoc-lab-edge-1
+    hostname: edge-1
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - NET_RAW
+    sysctls:
+      - net.ipv4.ip_forward=1
+    volumes:
+      - ./configs/edge-1/daemons:/etc/frr/daemons:ro
+      - ./configs/edge-1/frr.conf:/etc/frr/frr.conf:ro
+    networks:
+      neuronoc_lab_edge1_core1:
+        ipv4_address: 172.30.1.1
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - test "$(vtysh -c 'show ip bgp summary json' 2>/dev/null | grep -o '\"state\":\"Established\"' | wc -l)" -ge 1
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 25s
+
+  edge-2:
+    image: frrouting/frr:v8.4.1
+    pull_policy: never
+    container_name: neuronoc-lab-edge-2
+    hostname: edge-2
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - NET_RAW
+    sysctls:
+      - net.ipv4.ip_forward=1
+    volumes:
+      - ./configs/edge-2/daemons:/etc/frr/daemons:ro
+      - ./configs/edge-2/frr.conf:/etc/frr/frr.conf:ro
+    networks:
+      neuronoc_lab_edge2_core1:
+        ipv4_address: 172.30.2.1
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - test "$(vtysh -c 'show ip bgp summary json' 2>/dev/null | grep -o '\"state\":\"Established\"' | wc -l)" -ge 1
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 25s
+
+  core-1:
+    image: frrouting/frr:v8.4.1
+    pull_policy: never
+    container_name: neuronoc-lab-core-1
+    hostname: core-1
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - NET_RAW
+    sysctls:
+      - net.ipv4.ip_forward=1
+    volumes:
+      - ./configs/core-1/daemons:/etc/frr/daemons:ro
+      - ./configs/core-1/frr.conf:/etc/frr/frr.conf:ro
+    networks:
+      neuronoc_lab_edge1_core1:
+        ipv4_address: 172.30.1.2
+      neuronoc_lab_edge2_core1:
+        ipv4_address: 172.30.2.2
+      neuronoc_lab_branch1_core1:
+        ipv4_address: 172.30.3.2
+    healthcheck:
+      # core-1 must have all 3 eBGP peers Established before it is healthy.
+      test:
+        - CMD-SHELL
+        - test "$(vtysh -c 'show ip bgp summary json' 2>/dev/null | grep -o '\"state\":\"Established\"' | wc -l)" -ge 3
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 25s
+
+  branch-1:
+    image: frrouting/frr:v8.4.1
+    pull_policy: never
+    container_name: neuronoc-lab-branch-1
+    hostname: branch-1
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - NET_RAW
+    sysctls:
+      - net.ipv4.ip_forward=1
+    volumes:
+      - ./configs/branch-1/daemons:/etc/frr/daemons:ro
+      - ./configs/branch-1/frr.conf:/etc/frr/frr.conf:ro
+    networks:
+      neuronoc_lab_branch1_core1:
+        ipv4_address: 172.30.3.1
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - test "$(vtysh -c 'show ip bgp summary json' 2>/dev/null | grep -o '\"state\":\"Established\"' | wc -l)" -ge 1
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 25s
+
+networks:
+  neuronoc_lab_edge1_core1:
+    name: neuronoc_lab_edge1_core1
+    ipam:
+      config:
+        - subnet: 172.30.1.0/29
+          gateway: 172.30.1.6
+  neuronoc_lab_edge2_core1:
+    name: neuronoc_lab_edge2_core1
+    ipam:
+      config:
+        - subnet: 172.30.2.0/29
+          gateway: 172.30.2.6
+  neuronoc_lab_branch1_core1:
+    name: neuronoc_lab_branch1_core1
+    ipam:
+      config:
+        - subnet: 172.30.3.0/29
+          gateway: 172.30.3.6
