@@ -5,7 +5,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.db.models import IncidentSeverity, IncidentStatus, RecommendationRisk
+from app.db.models import (
+    ApprovalStatus,
+    IncidentSeverity,
+    IncidentStatus,
+    RecommendationRisk,
+)
 
 
 class DeviceRead(BaseModel):
@@ -104,3 +109,15 @@ class RecommendationRead(BaseModel):
     risk: RecommendationRisk
     requires_approval: bool
     created_at: datetime
+    approval_status: ApprovalStatus = ApprovalStatus.pending
+    approved_by: str | None = None
+    approved_at: datetime | None = None
+    approval_note: str | None = None
+
+
+class ApprovalRequest(BaseModel):
+    """Phase 10A approval payload. No auth yet - operator name is supplied by
+    the caller and persisted verbatim. Note is optional."""
+
+    operator_name: str = Field(min_length=1, max_length=128)
+    note: str | None = None

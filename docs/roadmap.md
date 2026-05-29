@@ -84,6 +84,16 @@ Phases are sequential. Each phase is reviewed and approved before the next begin
 - End-to-end loop: lab fault → detector → RCA → validation → plan → human-approved apply.
 - Lima fallback for x86_64-only network images.
 
+## Phase 10A — Remediation approval workflow stub *(current)*
+
+- Migration `f78faa47f6bd` adds 4 columns to `recommendations`: `approval_status` (default `'pending'`, indexed), `approved_by`, `approved_at`, `approval_note`.
+- `ApprovalStatus` enum (pending / approved / rejected). New `ApprovalRequest` schema (`operator_name`, optional `note`).
+- `set_recommendation_approval(db, rec_id, status, operator_name, note)` helper in `app/remediation/planner.py`; new exceptions `RecommendationNotFoundError` (404) and `WrongRecommendationTypeError` (400 - only `remediation_plan` recommendations are approvable).
+- HTTP: `POST /api/remediation/recommendations/{id}/approve` and `.../reject`. Idempotent same-state calls update the metadata.
+- Safety contract preserved: the existing "no remote-execution imports" AST scan now covers both `app/remediation/` AND `app/api/remediation.py`.
+- UI: per-plan approval badge + Approve/Reject buttons that prompt for operator + note and refresh the panel. Caveat line states recorded intent only, no execution.
+- **No auth yet, no execution path, no background job.** Approval is persisted intent only.
+
 ## Beyond
 
 - AuthN/AuthZ, multi-tenant.

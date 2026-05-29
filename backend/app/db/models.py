@@ -32,6 +32,12 @@ class RecommendationRisk(str, enum.Enum):
     high = "high"
 
 
+class ApprovalStatus(str, enum.Enum):
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+
+
 class Device(Base):
     __tablename__ = "devices"
 
@@ -185,6 +191,18 @@ class Recommendation(Base):
         default=True,
         server_default=text("true"),
     )
+    approval_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=ApprovalStatus.pending.value,
+        server_default=text("'pending'"),
+        index=True,
+    )
+    approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    approval_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

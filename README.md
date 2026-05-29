@@ -2,7 +2,17 @@
 
 NeuroNOC is an open-source multi-agent AI NetOps platform for network anomaly detection, root-cause analysis, validation, and remediation planning.
 
-## Phase 8C scope *(current)*
+## Phase 10A scope *(current)*
+
+**Remediation approval workflow stub.** Persists a `pending` / `approved` / `rejected` state on every remediation plan plus operator name + timestamp + free-text note. **Approving still does not execute anything** — there is no execution path in the code. This is recorded intent only, intended to make the human-in-the-loop a real database row instead of just a `requires_approval=True` flag.
+
+- 1 small forward-only migration (`f78faa47f6bd`) adds 4 columns to `recommendations`: `approval_status` (NOT NULL, server-defaults to `'pending'`, indexed), `approved_by`, `approved_at`, `approval_note`. Existing rows fill with `pending` at ALTER TABLE time.
+- New API: `POST /api/remediation/recommendations/{id}/approve` and `/reject` with `{operator_name, note}` body. 404 if missing, 400 if recommendation_type ≠ `remediation_plan`, idempotent same-state calls update the metadata.
+- No auth (the spec is "no auth yet" — operator_name is supplied by caller, persisted verbatim).
+- The Phase 7 "no remote-execution imports" safety scan now covers both `app/remediation/` AND `app/api/remediation.py`, so approval code can't silently acquire an execution dependency.
+- UI: every remediation plan card shows the approval badge plus `Approve` / `Reject` buttons; clicking either prompts for operator name + optional note, persists the decision, and refreshes the panel. A caveat line ("Plan-only … nothing is executed") sits above the card list.
+
+## Phase 8C scope
 
 **One-shot collector** that scrapes the Phase 8B FRR Compose lab over `docker exec` + `vtysh -c "show ... json"` and writes the BGP state into the existing `Incident` / `IncidentEvent` tables. **No schema change.** No background daemon, no scheduler, no loop — each invocation produces one fresh tagged `Incident` plus one `IncidentEvent` per peer (plus an aggregate snapshot event per router, plus a `lab_bgp_collection_error` event for any router we couldn't reach).
 

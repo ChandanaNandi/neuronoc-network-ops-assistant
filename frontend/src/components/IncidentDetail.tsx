@@ -71,6 +71,9 @@ export function IncidentDetail({
   const [running, setRunning] = useState<ActionKey | null>(null)
   const [actionMsg, setActionMsg] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Per-plan id while an approve/reject call is in flight; disables that
+  // plan's buttons but leaves the rest of the UI usable.
+  const [approving, setApproving] = useState<string | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -110,6 +113,42 @@ export function IncidentDetail({
       alive = false
     }
   }, [incidentId, refreshTrigger, onError])
+
+  async function handleApproval(
+    recommendationId: string,
+    kind: 'approve' | 'reject',
+  ) {
+    // Native prompt is the Phase 10A UX per spec - a small inline form is a
+    // worthwhile Phase 10B polish but is out of scope here.
+    const operator = window.prompt(`Operator name to ${kind}:`)
+    if (!operator || !operator.trim()) {
+      return
+    }
+    const noteRaw = window.prompt('Note (optional):')
+    const note = noteRaw && noteRaw.trim() ? noteRaw.trim() : null
+
+    setApproving(recommendationId)
+    try {
+      const body = { operator_name: operator.trim(), note }
+      if (kind === 'approve') {
+        await api.approveRecommendation(recommendationId, body)
+      } else {
+        await api.rejectRecommendation(recommendationId, body)
+      }
+      // On success: rely on the refreshed plan card itself to show the new
+      // status / operator / note via its plan-card__approval block. Setting
+      // actionMsg here would only survive until the next detail refetch
+      // wipes it, so it's noise. Failures still surface via actionMsg +
+      // the top-level error banner below.
+      onPersistedMutation()
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.detail : `${kind} failed`
+      setActionMsg(`Error: ${msg}`)
+      onError(`${kind} plan: ${msg}`)
+    } finally {
+      setApproving(null)
+    }
+  }
 
   async function runAction(key: ActionKey) {
     setRunning(key)
@@ -398,6 +437,10 @@ export function IncidentDetail({
           Remediation plans{' '}
           <span className="muted">({plans?.length ?? 0})</span>
         </h3>
+        <div className="muted plan-section__caveat">
+          Plan-only. Approving or rejecting records intent on the row -
+          nothing is executed and no device is contacted.
+        </div>
         {plans && plans.length === 0 && (
           <div className="muted">
             No remediation plans yet. Click "Generate remediation plan" - drafts only,
@@ -413,9 +456,49 @@ export function IncidentDetail({
                 >
                   risk {p.risk}
                 </span>{' '}
+                <span
+                  className={`badge badge--approval-${p.approval_status}`}
+                >
+                  {p.approval_status}
+                </span>{' '}
                 {p.title}{' '}
                 <span className="muted">{formatDate(p.created_at)}</span>
               </summary>
+              {p.approval_status !== 'pending' && (
+                <div className="plan-card__approval">
+                  <strong>{p.approval_status}</strong>{' '}
+                  by <code>{p.approved_by ?? '?'}</code>{' '}
+                  {p.approved_at && (
+                    <span className="muted">at {formatDate(p.approved_at)}</span>
+                  )}
+                  {p.approval_note && (
+                    <div className="plan-card__note">
+                      <span className="label">note:</span> {p.approval_note}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="plan-card__actions">
+                <button
+                  type="button"
+                  className="btn btn--action"
+                  disabled={approving === p.id}
+                  onClick={() => handleApproval(p.id, 'approve')}
+                >
+                  {approving === p.id ? 'Working...' : 'Approve'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--action"
+                  disabled={approving === p.id}
+                  onClick={() => handleApproval(p.id, 'reject')}
+                >
+                  {approving === p.id ? 'Working...' : 'Reject'}
+                </button>
+                <span className="muted plan-card__safety">
+                  records intent only; no execution
+                </span>
+              </div>
               <pre className="plan-card__details">{p.details}</pre>
             </details>
           ))}

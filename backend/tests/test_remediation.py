@@ -222,6 +222,149 @@ def test_api_get_404_for_missing_incident(client: TestClient) -> None:
     assert response.status_code == 404
 
 
+# ---------- approval workflow (Phase 10A, stub - no execution) ----------
+
+
+def test_new_plan_defaults_to_pending_approval(db_session: Session) -> None:
+    incident = _seed(db_session, "bgp_neighbor_down")
+    plan = build_remediation_plan(db_session, incident.id)
+    rec = persist_remediation_recommendation(db_session, plan)
+
+    assert rec.approval_status == "pending"
+    assert rec.approved_by is None
+    assert rec.approved_at is None
+    assert rec.approval_note is None
+
+
+def test_api_approve_plan_records_intent(
+    client: TestClient, db_session: Session
+) -> None:
+    incident = _seed(db_session, "bgp_neighbor_down")
+    plan_resp = client.post(f"/api/remediation/incidents/{incident.id}/plan")
+    assert plan_resp.status_code == 201
+    plans = client.get(
+        f"/api/remediation/incidents/{incident.id}/plans"
+    ).json()
+    rec_id = plans[0]["id"]
+
+    response = client.post(
+        f"/api/remediation/recommendations/{rec_id}/approve",
+        json={"operator_name": "alice", "note": "approved during change window"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["approval_status"] == "approved"
+    assert body["approved_by"] == "alice"
+    assert body["approval_note"] == "approved during change window"
+    assert body["approved_at"] is not None
+    # requires_approval flag is unchanged - it's a contract, not a state.
+    assert body["requires_approval"] is True
+
+
+def test_api_reject_plan_records_intent(
+    client: TestClient, db_session: Session
+) -> None:
+    incident = _seed(db_session, "bgp_neighbor_down")
+    client.post(f"/api/remediation/incidents/{incident.id}/plan")
+    rec_id = client.get(
+        f"/api/remediation/incidents/{incident.id}/plans"
+    ).json()[0]["id"]
+
+    response = client.post(
+        f"/api/remediation/recommendations/{rec_id}/reject",
+        json={"operator_name": "bob", "note": "wrong scope, see ticket NN-42"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["approval_status"] == "rejected"
+    assert body["approved_by"] == "bob"
+
+
+def test_api_idempotent_reapprove_updates_metadata(
+    client: TestClient, db_session: Session
+) -> None:
+    incident = _seed(db_session, "bgp_neighbor_down")
+    client.post(f"/api/remediation/incidents/{incident.id}/plan")
+    rec_id = client.get(
+        f"/api/remediation/incidents/{incident.id}/plans"
+    ).json()[0]["id"]
+
+    client.post(
+        f"/api/remediation/recommendations/{rec_id}/approve",
+        json={"operator_name": "alice", "note": "first"},
+    )
+    response = client.post(
+        f"/api/remediation/recommendations/{rec_id}/approve",
+        json={"operator_name": "carol", "note": "second"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["approval_status"] == "approved"
+    assert body["approved_by"] == "carol"
+    assert body["approval_note"] == "second"
+
+
+def test_api_approve_404_for_missing_recommendation(client: TestClient) -> None:
+    response = client.post(
+        f"/api/remediation/recommendations/{uuid4()}/approve",
+        json={"operator_name": "alice"},
+    )
+    assert response.status_code == 404
+
+
+def test_api_approve_400_for_non_remediation_recommendation(
+    client: TestClient, db_session: Session
+) -> None:
+    # Create a recommendation with a different type, directly via the
+    # incidents API to bypass the planner.
+    incident = _seed(db_session, "bgp_neighbor_down")
+    rec_resp = client.post(
+        f"/api/incidents/{incident.id}/recommendations",
+        json={
+            "recommendation_type": "informational_note",
+            "title": "just an FYI",
+            "details": "operator should know this",
+            "risk": "low",
+        },
+    )
+    assert rec_resp.status_code == 201, rec_resp.text
+    rec_id = rec_resp.json()["id"]
+
+    response = client.post(
+        f"/api/remediation/recommendations/{rec_id}/approve",
+        json={"operator_name": "alice"},
+    )
+    assert response.status_code == 400
+    assert "remediation_plan" in response.json()["detail"]
+
+
+def test_api_approve_requires_operator_name(
+    client: TestClient, db_session: Session
+) -> None:
+    incident = _seed(db_session, "bgp_neighbor_down")
+    client.post(f"/api/remediation/incidents/{incident.id}/plan")
+    rec_id = client.get(
+        f"/api/remediation/incidents/{incident.id}/plans"
+    ).json()[0]["id"]
+
+    # missing operator_name -> 422
+    assert (
+        client.post(
+            f"/api/remediation/recommendations/{rec_id}/approve",
+            json={"note": "noop"},
+        ).status_code
+        == 422
+    )
+    # empty operator_name -> 422 (Pydantic min_length=1)
+    assert (
+        client.post(
+            f"/api/remediation/recommendations/{rec_id}/approve",
+            json={"operator_name": ""},
+        ).status_code
+        == 422
+    )
+
+
 # ---------- CLI ----------
 
 
@@ -304,35 +447,43 @@ def _root_module(name: str) -> str:
     return name.split(".", 1)[0]
 
 
-def test_remediation_package_blocks_execution_library_imports() -> None:
-    """The remediation planner is plan-only. This test parses each .py file
-    under app/remediation with the Python AST and fails the build if any
-    real import statement pulls in a remote-execution library.
-
-    Strings inside docstrings or comments are ignored on purpose - only
-    actual `Import` / `ImportFrom` nodes count."""
-    pkg_root = Path(__file__).resolve().parents[1] / "app" / "remediation"
-    assert pkg_root.is_dir(), f"could not find {pkg_root}"
-
+def _scan_files_for_execution_imports(
+    files: list[Path],
+) -> list[str]:
     offenders: list[str] = []
-    for py_file in pkg_root.rglob("*.py"):
+    for py_file in files:
         tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     if _root_module(alias.name) in _FORBIDDEN_EXECUTION_LIBS:
                         offenders.append(
-                            f"{py_file.relative_to(pkg_root.parent.parent)}:"
-                            f"{node.lineno}: import {alias.name}"
+                            f"{py_file.name}:{node.lineno}: import {alias.name}"
                         )
             elif isinstance(node, ast.ImportFrom) and node.module:
                 if _root_module(node.module) in _FORBIDDEN_EXECUTION_LIBS:
                     offenders.append(
-                        f"{py_file.relative_to(pkg_root.parent.parent)}:"
-                        f"{node.lineno}: from {node.module} import ..."
+                        f"{py_file.name}:{node.lineno}: "
+                        f"from {node.module} import ..."
                     )
+    return offenders
 
+
+def test_remediation_package_blocks_execution_library_imports() -> None:
+    """The remediation planner + its HTTP wrapper are plan-only. This test
+    parses every .py file under app/remediation AND the api/remediation.py
+    wrapper with the Python AST and fails the build if any real import
+    statement pulls in a remote-execution library.
+
+    Strings inside docstrings or comments are ignored on purpose - only
+    actual `Import` / `ImportFrom` nodes count."""
+    app_root = Path(__file__).resolve().parents[1] / "app"
+    files: list[Path] = list((app_root / "remediation").rglob("*.py"))
+    files.append(app_root / "api" / "remediation.py")
+    assert files, "no remediation files found"
+
+    offenders = _scan_files_for_execution_imports(files)
     assert not offenders, (
-        "Phase 7 packages must never import a remote-execution library:\n  "
+        "Remediation code must never import a remote-execution library:\n  "
         + "\n  ".join(offenders)
     )

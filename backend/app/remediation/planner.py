@@ -12,6 +12,7 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import desc, select
@@ -19,12 +20,26 @@ from sqlalchemy.orm import Session
 
 from app.agents.runner import run_incident_analysis
 from app.anomaly.engine import IncidentNotFoundError
-from app.db.models import AgentRun, Incident, Recommendation
+from app.db.models import AgentRun, ApprovalStatus, Incident, Recommendation
 from app.db.session import SessionLocal
 from app.llm.ollama import OllamaUnavailableError
 from app.rca.explainer import generate_rca_explanation
 from app.remediation.templates import pick_template
 from app.schemas.remediation import RemediationPlan
+
+
+REMEDIATION_PLAN_TYPE = "remediation_plan"
+
+
+class RecommendationNotFoundError(Exception):
+    """Raised when an approve/reject targets an unknown recommendation id."""
+
+
+class WrongRecommendationTypeError(Exception):
+    """Raised when approve/reject targets a recommendation whose
+    `recommendation_type` is not `remediation_plan`. The approval workflow
+    is scoped to remediation plans only; other recommendation kinds are
+    informational and have no approval state."""
 
 
 def _latest_completed_report(db: Session, incident_id: UUID) -> dict | None:
@@ -92,16 +107,59 @@ def persist_remediation_recommendation(
     """Persist the plan as a Recommendation row tagged `remediation_plan`.
 
     `requires_approval` is hard-pinned to True regardless of the input plan.
+    New rows default to `approval_status="pending"` via the server default.
     """
     rec = Recommendation(
         incident_id=plan.incident_id,
-        recommendation_type="remediation_plan",
+        recommendation_type=REMEDIATION_PLAN_TYPE,
         title=plan.title,
         details=_render_details(plan),
         risk=plan.risk,
         requires_approval=True,
     )
     db.add(rec)
+    db.commit()
+    db.refresh(rec)
+    return rec
+
+
+def set_recommendation_approval(
+    db: Session,
+    recommendation_id: UUID,
+    status: ApprovalStatus,
+    operator_name: str,
+    note: str | None,
+) -> Recommendation:
+    """Phase 10A approval-stub helper.
+
+    Records intent ONLY. Never executes a command, never connects to a device,
+    never imports an execution library (a safety test scans this package for
+    such imports).
+
+    Idempotent same-state calls are allowed - they update operator/at/note
+    so the latest decision is recorded.
+
+    Raises:
+        RecommendationNotFoundError: unknown id (caller -> 404).
+        WrongRecommendationTypeError: recommendation_type != "remediation_plan"
+            (caller -> 400).
+    """
+    rec = db.get(Recommendation, recommendation_id)
+    if rec is None:
+        raise RecommendationNotFoundError(
+            f"recommendation {recommendation_id} not found"
+        )
+    if rec.recommendation_type != REMEDIATION_PLAN_TYPE:
+        raise WrongRecommendationTypeError(
+            f"recommendation {recommendation_id} has type "
+            f"'{rec.recommendation_type}', only '{REMEDIATION_PLAN_TYPE}' "
+            "is approvable"
+        )
+
+    rec.approval_status = status.value
+    rec.approved_by = operator_name
+    rec.approved_at = datetime.now(timezone.utc)
+    rec.approval_note = note
     db.commit()
     db.refresh(rec)
     return rec

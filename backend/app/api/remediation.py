@@ -5,13 +5,16 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.anomaly.engine import IncidentNotFoundError
-from app.db.models import Incident, Recommendation
+from app.db.models import ApprovalStatus, Incident, Recommendation
 from app.db.session import get_db
 from app.remediation.planner import (
+    RecommendationNotFoundError,
+    WrongRecommendationTypeError,
     build_remediation_plan,
     persist_remediation_recommendation,
+    set_recommendation_approval,
 )
-from app.schemas.incidents import RecommendationRead
+from app.schemas.incidents import ApprovalRequest, RecommendationRead
 from app.schemas.remediation import RemediationPlan
 
 router = APIRouter(prefix="/api/remediation", tags=["remediation"])
@@ -34,6 +37,63 @@ def generate_plan(
 
     persist_remediation_recommendation(db, plan)
     return plan
+
+
+def _apply_approval(
+    db: Session,
+    recommendation_id: UUID,
+    status_value: ApprovalStatus,
+    payload: ApprovalRequest,
+) -> Recommendation:
+    try:
+        return set_recommendation_approval(
+            db,
+            recommendation_id,
+            status_value,
+            operator_name=payload.operator_name,
+            note=payload.note,
+        )
+    except RecommendationNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except WrongRecommendationTypeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+
+@router.post(
+    "/recommendations/{recommendation_id}/approve",
+    response_model=RecommendationRead,
+)
+def approve_recommendation(
+    recommendation_id: UUID,
+    payload: ApprovalRequest,
+    db: Session = Depends(get_db),
+) -> Recommendation:
+    """Mark a remediation plan as APPROVED. Records intent only - no command
+    is run, no device is contacted. Idempotent same-state calls update the
+    operator/timestamp/note so the latest decision is captured."""
+    return _apply_approval(
+        db, recommendation_id, ApprovalStatus.approved, payload
+    )
+
+
+@router.post(
+    "/recommendations/{recommendation_id}/reject",
+    response_model=RecommendationRead,
+)
+def reject_recommendation(
+    recommendation_id: UUID,
+    payload: ApprovalRequest,
+    db: Session = Depends(get_db),
+) -> Recommendation:
+    """Mark a remediation plan as REJECTED. Same safety contract as approve:
+    records intent only, never executes anything."""
+    return _apply_approval(
+        db, recommendation_id, ApprovalStatus.rejected, payload
+    )
 
 
 @router.get(

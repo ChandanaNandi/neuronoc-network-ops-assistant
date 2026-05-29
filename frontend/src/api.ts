@@ -11,6 +11,7 @@
 export type Severity = 'low' | 'medium' | 'high' | 'critical'
 export type IncidentStatus = 'open' | 'investigating' | 'resolved'
 export type RecommendationRisk = 'low' | 'medium' | 'high'
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected'
 
 export interface Incident {
   id: string
@@ -104,6 +105,15 @@ export interface Recommendation {
   risk: RecommendationRisk
   requires_approval: boolean
   created_at: string
+  approval_status: ApprovalStatus
+  approved_by: string | null
+  approved_at: string | null
+  approval_note: string | null
+}
+
+export interface ApprovalRequest {
+  operator_name: string
+  note?: string | null
 }
 
 export interface RemediationPlan {
@@ -183,6 +193,13 @@ async function request<T>(
 const post = <T>(path: string): Promise<T> =>
   request<T>(path, { method: 'POST' })
 
+const postJson = <T>(path: string, body: unknown): Promise<T> =>
+  request<T>(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+
 // ----- endpoints -----
 
 export const api = {
@@ -231,6 +248,24 @@ export const api = {
 
   collectLabBgp: (): Promise<LabBgpCollectionSummary> =>
     post<LabBgpCollectionSummary>('/api/lab/collect/bgp'),
+
+  approveRecommendation: (
+    id: string,
+    body: ApprovalRequest,
+  ): Promise<Recommendation> =>
+    postJson<Recommendation>(
+      `/api/remediation/recommendations/${id}/approve`,
+      body,
+    ),
+
+  rejectRecommendation: (
+    id: string,
+    body: ApprovalRequest,
+  ): Promise<Recommendation> =>
+    postJson<Recommendation>(
+      `/api/remediation/recommendations/${id}/reject`,
+      body,
+    ),
 }
 
 // ----- small utils for the UI -----

@@ -320,6 +320,19 @@
   color: #f3a3a3;
 }
 
+.badge--approval-pending {
+  background: #4a3a14;
+  color: #f0c674;
+}
+.badge--approval-approved {
+  background: #1c4a1c;
+  color: #8edf8e;
+}
+.badge--approval-rejected {
+  background: #4a1a1a;
+  color: #f3a3a3;
+}
+
 /* ----- incident detail ----- */
 
 .incident-detail-pane {
@@ -457,6 +470,42 @@
   margin: 0.5rem 0 0.5rem 1.25rem;
   padding: 0;
   font-size: 0.78rem;
+}
+
+.plan-section__caveat {
+  margin-bottom: 0.5rem;
+  font-size: 0.78rem;
+  font-style: italic;
+}
+
+.plan-card__approval {
+  margin: 0.5rem 0 0;
+  padding: 0.4rem 0.6rem;
+  background: #0a0f17;
+  border-left: 2px solid #2e5a8f;
+  border-radius: 4px;
+  font-size: 0.78rem;
+}
+
+.plan-card__note {
+  margin-top: 0.25rem;
+}
+
+.plan-card__note .label {
+  color: #8b95a3;
+  margin-right: 0.25rem;
+}
+
+.plan-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.plan-card__safety {
+  font-size: 0.72rem;
+  font-style: italic;
 }
 
 .run-card__report,
