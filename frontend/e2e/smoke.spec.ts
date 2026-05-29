@@ -109,7 +109,7 @@ test('Generate remediation plan adds a new plan card', async ({ page }) => {
   })
 })
 
-test('Approve a plan via window.prompt shows approved badge + operator + note', async ({
+test('Approve a plan via the inline form shows approved badge + operator + note', async ({
   page,
 }) => {
   await selectBgpIncident(page)
@@ -122,21 +122,30 @@ test('Approve a plan via window.prompt shows approved badge + operator + note', 
     timeout: 20_000,
   })
 
-  // window.prompt fires twice: once for operator name, once for note. Accept
-  // each with the next value from this queue.
-  const replies = ['e2e-operator', 'approved during smoke run']
-  page.on('dialog', async (dialog) => {
-    await dialog.accept(replies.shift() ?? '')
-  })
-
-  // Open the newest plan card (list is newest-first) and click Approve.
+  // Phase 10B: inline form replaces window.prompt. No dialog handler needed.
+  // Open the newest plan card (list is newest-first), click Approve, fill
+  // operator name + note, click Confirm approve.
   const newest = page.locator('.plan-card').first()
   await newest.locator('summary').click()
   await newest.getByRole('button', { name: 'Approve' }).click()
 
-  // The refreshed plan card carries the approval state (the Phase 10A cleanup
-  // intentionally relies on the card's own approval block to show success,
-  // not an ephemeral inline message).
+  // Form is now visible inside the plan card.
+  const form = newest.locator('.approval-form')
+  await expect(form).toBeVisible()
+
+  // Submit should be disabled while operator field is empty.
+  const confirmBtn = form.getByRole('button', { name: /^Confirm approve$/i })
+  await expect(confirmBtn).toBeDisabled()
+
+  await form.getByLabel('operator name').fill('e2e-operator')
+  await form.getByLabel('approval note').fill('approved during smoke run')
+
+  await expect(confirmBtn).toBeEnabled()
+  await confirmBtn.click()
+
+  // The refreshed plan card carries the approval state (Phase 10A's cleanup
+  // intentionally relies on the card's own approval block, not an ephemeral
+  // inline message). The inline form should collapse on success.
   await expect(newest.locator('.badge--approval-approved')).toBeVisible({
     timeout: 10_000,
   })
@@ -146,6 +155,7 @@ test('Approve a plan via window.prompt shows approved badge + operator + note', 
   await expect(newest.locator('.plan-card__approval')).toContainText(
     'approved during smoke run',
   )
+  await expect(newest.locator('.approval-form')).toHaveCount(0)
 })
 
 test('Generate RCA shows the RCA section and it persists past the response', async ({

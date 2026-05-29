@@ -82,9 +82,17 @@ This is the full path for a visual walk-through of every UI section.
 
 9. **Click `Generate remediation plan`**. A new `Remediation plans` card appears with `risk medium · BGP neighbor recovery - investigate L1 and soft-reset session (draft)`. Open the `<details>` to see the human-readable summary plus the full plan JSON. **Nothing executes** — this is plan-only by design.
 
-10. **Resize the window** to a narrow width: the master/detail collapses to a single column under `900px`.
+10. **Approve a remediation plan** (Phase 10B inline form). Open the new plan card's details, click **Approve**. A small inline form appears inside the card with two fields:
+    - **Operator name** (required — the `Confirm approve` button is disabled until you type something).
+    - **Note** (optional textarea).
 
-11. **Clean up** when done:
+    Type your name + an optional note, then click `Confirm approve`. The form collapses, the plan card's status badge flips from `pending` to `approved`, and an approval block shows your operator name + timestamp + note. **Nothing was executed** — the form's heading reminds you "records intent only; no execution."
+
+    `Reject` works identically, with the badge ending up `rejected`. Only one approval form is open at a time across all plan cards. Clicking `Cancel` discards the in-progress draft.
+
+11. **Resize the window** to a narrow width: the master/detail collapses to a single column under `900px`.
+
+12. **Clean up** when done:
 
     ```bash
     cd backend

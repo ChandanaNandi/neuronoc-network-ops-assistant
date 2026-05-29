@@ -508,6 +508,60 @@
   font-style: italic;
 }
 
+.approval-form {
+  margin: 0.5rem 0 0;
+  padding: 0.55rem 0.7rem;
+  background: #0a0f17;
+  border: 1px solid #2a313c;
+  border-left: 2px solid #2e5a8f;
+  border-radius: 4px;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.approval-form__title {
+  font-size: 0.78rem;
+  color: #8b95a3;
+  font-style: italic;
+  margin-bottom: 0.1rem;
+}
+
+.approval-form__field {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.approval-form__label {
+  font-size: 0.72rem;
+  color: #8b95a3;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.approval-form__input,
+.approval-form__textarea {
+  font: inherit;
+  font-size: 0.82rem;
+  background: #050810;
+  color: #e6e8eb;
+  border: 1px solid #2a313c;
+  border-radius: 4px;
+  padding: 0.3rem 0.45rem;
+  resize: vertical;
+}
+
+.approval-form__input:focus,
+.approval-form__textarea:focus {
+  outline: none;
+  border-color: #3b6ca5;
+}
+
+.approval-form__actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.1rem;
+}
+
 .run-card__report,
 .plan-card__details {
   margin: 0.5rem 0 0 0;

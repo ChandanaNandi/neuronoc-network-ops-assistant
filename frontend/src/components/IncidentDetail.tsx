@@ -71,9 +71,17 @@ export function IncidentDetail({
   const [running, setRunning] = useState<ActionKey | null>(null)
   const [actionMsg, setActionMsg] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  // Per-plan id while an approve/reject call is in flight; disables that
-  // plan's buttons but leaves the rest of the UI usable.
-  const [approving, setApproving] = useState<string | null>(null)
+  // At most one inline approval form is open at a time. The draft captures
+  // which plan it belongs to, the kind of decision (approve/reject), and
+  // the in-progress operator name + note. Phase 10B replaces the Phase 10A
+  // window.prompt flow.
+  const [approvalDraft, setApprovalDraft] = useState<{
+    recId: string
+    kind: 'approve' | 'reject'
+    operator: string
+    note: string
+  } | null>(null)
+  const [submittingApproval, setSubmittingApproval] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -114,39 +122,54 @@ export function IncidentDetail({
     }
   }, [incidentId, refreshTrigger, onError])
 
-  async function handleApproval(
+  function openApprovalForm(
     recommendationId: string,
     kind: 'approve' | 'reject',
   ) {
-    // Native prompt is the Phase 10A UX per spec - a small inline form is a
-    // worthwhile Phase 10B polish but is out of scope here.
-    const operator = window.prompt(`Operator name to ${kind}:`)
-    if (!operator || !operator.trim()) {
-      return
-    }
-    const noteRaw = window.prompt('Note (optional):')
-    const note = noteRaw && noteRaw.trim() ? noteRaw.trim() : null
+    setApprovalDraft({
+      recId: recommendationId,
+      kind,
+      operator: '',
+      note: '',
+    })
+  }
 
-    setApproving(recommendationId)
+  function closeApprovalForm() {
+    setApprovalDraft(null)
+  }
+
+  async function submitApprovalForm() {
+    if (!approvalDraft) return
+    const operatorName = approvalDraft.operator.trim()
+    if (!operatorName) return // submit is disabled in this state anyway
+
+    setSubmittingApproval(true)
     try {
-      const body = { operator_name: operator.trim(), note }
-      if (kind === 'approve') {
-        await api.approveRecommendation(recommendationId, body)
-      } else {
-        await api.rejectRecommendation(recommendationId, body)
+      const body = {
+        operator_name: operatorName,
+        note: approvalDraft.note.trim() || null,
       }
-      // On success: rely on the refreshed plan card itself to show the new
-      // status / operator / note via its plan-card__approval block. Setting
-      // actionMsg here would only survive until the next detail refetch
-      // wipes it, so it's noise. Failures still surface via actionMsg +
-      // the top-level error banner below.
+      if (approvalDraft.kind === 'approve') {
+        await api.approveRecommendation(approvalDraft.recId, body)
+      } else {
+        await api.rejectRecommendation(approvalDraft.recId, body)
+      }
+      // On success the refreshed plan card itself shows the new status /
+      // operator / note via its plan-card__approval block, so we just
+      // collapse the form. The detail refetch wipes any inline actionMsg
+      // anyway (see Phase 9A handling).
+      setApprovalDraft(null)
       onPersistedMutation()
     } catch (err) {
-      const msg = err instanceof ApiError ? err.detail : `${kind} failed`
+      // Keep the form open on failure so the operator doesn't have to
+      // retype, and surface the error via both the inline action-msg and
+      // the top-level error banner.
+      const msg =
+        err instanceof ApiError ? err.detail : `${approvalDraft.kind} failed`
       setActionMsg(`Error: ${msg}`)
-      onError(`${kind} plan: ${msg}`)
+      onError(`${approvalDraft.kind} plan: ${msg}`)
     } finally {
-      setApproving(null)
+      setSubmittingApproval(false)
     }
   }
 
@@ -482,23 +505,94 @@ export function IncidentDetail({
                 <button
                   type="button"
                   className="btn btn--action"
-                  disabled={approving === p.id}
-                  onClick={() => handleApproval(p.id, 'approve')}
+                  disabled={approvalDraft?.recId === p.id || submittingApproval}
+                  onClick={() => openApprovalForm(p.id, 'approve')}
                 >
-                  {approving === p.id ? 'Working...' : 'Approve'}
+                  Approve
                 </button>
                 <button
                   type="button"
                   className="btn btn--action"
-                  disabled={approving === p.id}
-                  onClick={() => handleApproval(p.id, 'reject')}
+                  disabled={approvalDraft?.recId === p.id || submittingApproval}
+                  onClick={() => openApprovalForm(p.id, 'reject')}
                 >
-                  {approving === p.id ? 'Working...' : 'Reject'}
+                  Reject
                 </button>
                 <span className="muted plan-card__safety">
                   records intent only; no execution
                 </span>
               </div>
+              {approvalDraft?.recId === p.id && (
+                <form
+                  className="approval-form"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    void submitApprovalForm()
+                  }}
+                >
+                  <div className="approval-form__title">
+                    Confirm {approvalDraft.kind} - records intent only;
+                    no execution.
+                  </div>
+                  <label className="approval-form__field">
+                    <span className="approval-form__label">Operator name</span>
+                    <input
+                      type="text"
+                      className="approval-form__input"
+                      aria-label="operator name"
+                      autoFocus
+                      required
+                      value={approvalDraft.operator}
+                      onChange={(e) =>
+                        setApprovalDraft({
+                          ...approvalDraft,
+                          operator: e.target.value,
+                        })
+                      }
+                      disabled={submittingApproval}
+                    />
+                  </label>
+                  <label className="approval-form__field">
+                    <span className="approval-form__label">
+                      Note (optional)
+                    </span>
+                    <textarea
+                      className="approval-form__textarea"
+                      aria-label="approval note"
+                      rows={2}
+                      value={approvalDraft.note}
+                      onChange={(e) =>
+                        setApprovalDraft({
+                          ...approvalDraft,
+                          note: e.target.value,
+                        })
+                      }
+                      disabled={submittingApproval}
+                    />
+                  </label>
+                  <div className="approval-form__actions">
+                    <button
+                      type="submit"
+                      className="btn btn--primary btn--action"
+                      disabled={
+                        !approvalDraft.operator.trim() || submittingApproval
+                      }
+                    >
+                      {submittingApproval
+                        ? 'Working...'
+                        : `Confirm ${approvalDraft.kind}`}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn--action"
+                      onClick={closeApprovalForm}
+                      disabled={submittingApproval}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              )}
               <pre className="plan-card__details">{p.details}</pre>
             </details>
           ))}
