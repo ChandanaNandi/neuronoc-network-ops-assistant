@@ -25,21 +25,22 @@ Phases are sequential. Each phase is reviewed and approved before the next begin
 - Deterministic synthetic incident generator in `app/simulator/` — **not a real collector**, no SNMP / syslog / streaming.
 - 4 simulator devices, 5 scenarios, CLI + optional API, surgical reset.
 
-## Phase 4 — Anomaly engine *(current)*
+## Phase 4 — Anomaly engine ✓
 
-- Deterministic rule-based engine in `app/anomaly/` — **no ML, no LLM, no learned weights**.
-- 7 rules (`R001`–`R007`) cover BGP down, route withdrawal, interface error spike, packet loss, latency spike, ACL deny spike, route missing.
-- `AnomalyFinding` is a Pydantic model with `rule_id`, `rule_name`, `severity`, `confidence`, `incident_id`, `incident_type`, `summary`, `evidence_refs`, `recommended_next_step`.
-- Engine entry points: `analyze_incident(db, incident_id)` and `analyze_open_incidents(db, limit)`. Read-only — findings are recomputed per request and **not persisted** (that lands in Phase 5).
-- HTTP: `GET /api/anomalies/incidents/{id}` (404 on miss), `GET /api/anomalies/open?limit=50` (max 100).
-- CLI: `python -m app.anomaly.engine --incident-id <uuid>|--open [--limit N]`, prints JSON.
-- Deferred to later phases: statistical detectors (z-score, EWMA), windowing / time-series detection, ML / learned models, persistence of findings, backpressure-safe ingest loop (those arrive with the real collector).
+- Deterministic rule-based engine in `app/anomaly/` — no ML, no LLM.
+- 7 rules (`R001`–`R007`).
+- Read-only: findings recomputed per request, not persisted (persistence arrives in Phase 5 via `agent_runs`).
 
-## Phase 5 — LangGraph multi-agent orchestration
+## Phase 5 — LangGraph multi-agent orchestration *(current)*
 
-- Supervisor + Detector / RCA / Validator / Remediator agents.
-- Typed agent I/O, tool whitelist, audit log per run.
-- Frontend Agent Inspector showing the reasoning trail.
+- LangGraph 1.x `StateGraph` workflow in `app/agents/`. **Deterministic Python nodes** - no LLM calls, no learned behavior.
+- 6 nodes wired START → `load_incident` → `anomaly_detection` → `evidence_summary` → `correlation` → `validation` → `report` → END.
+- Correlation produces themes ∈ {`routing_failure`, `interface_physical_issue`, `latency_or_loss`, `policy_block`, `unknown`}; validation produces impacts ∈ {`reachability_loss`, `route_missing`, `packet_loss`, `high_latency`, `acl_deny`}.
+- Final `IncidentAnalysisReport`: anomaly count, key findings, correlated signals, suspected root cause (templated), validation summary, recommended next steps, `requires_human_review`, average confidence.
+- New tables: `agent_runs` (incident_id, workflow_name, status, input/output payload, error, timestamps) and `agent_steps` (run_id, step_name, status, output_payload, error). FK cascade-delete from runs.
+- HTTP: `POST /api/agents/incidents/{id}/analyze`, `GET /api/agents/runs/{id}`, `GET /api/agents/incidents/{id}/runs?limit=20`.
+- CLI: `python -m app.agents.runner --incident-id <uuid>`, prints final report JSON.
+- Synchronous execution only — background jobs and the frontend Agent Inspector are deferred.
 
 ## Phase 6 — Ollama / RAG explanation
 

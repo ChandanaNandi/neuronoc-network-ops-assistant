@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from app.api.agents import router as agents_router
 from app.api.anomalies import router as anomalies_router
 from app.api.health import router as health_router
 from app.api.incidents import router as incidents_router
@@ -11,6 +12,7 @@ app.include_router(health_router)
 app.include_router(incidents_router)
 app.include_router(simulator_router)
 app.include_router(anomalies_router)
+app.include_router(agents_router)
 
 
 @app.get("/")

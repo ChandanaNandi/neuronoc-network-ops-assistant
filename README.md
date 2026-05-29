@@ -2,17 +2,19 @@
 
 NeuroNOC is an open-source multi-agent AI NetOps platform for network anomaly detection, root-cause analysis, validation, and remediation planning.
 
-## Phase 4 scope *(current)*
+## Phase 5 scope *(current)*
 
-A **deterministic rule-based anomaly engine** that reads incident events / evidence from Postgres and emits structured `AnomalyFinding` objects. **No ML, no LLM, no learned weights.** This is the contract surface the multi-agent orchestrator will consume in Phase 5.
+**Deterministic LangGraph multi-agent orchestration.** The Phase 4 anomaly engine becomes one node inside a fixed 6-node workflow that loads an incident, runs anomaly detection, summarizes evidence, correlates signals into themes, validates impact, and produces an `IncidentAnalysisReport`. Every run is persisted (`agent_runs` / `agent_steps`) for audit. **Still no LLM, no RAG, no ML, no remediation execution** — all "agent" logic is pure-Python deterministic templates.
 
-- 7 rules covering BGP-down, route withdrawal, interface error spikes, packet loss, latency spike, ACL deny spikes, and missing routes.
-- Findings carry: `rule_id`, `rule_name`, `severity`, `confidence`, `incident_id`, `incident_type`, `summary`, `evidence_refs`, `recommended_next_step`.
-- Phase 4 is **read-only** — no new DB tables, no persistence of findings. Agent-run persistence lands in Phase 5.
-- API: `GET /api/anomalies/incidents/{id}` and `GET /api/anomalies/open?limit=50` (max 100).
-- CLI: `uv run python -m app.anomaly.engine --incident-id <uuid>` and `--open --limit 50`.
+- 6 nodes: `load_incident → anomaly_detection → evidence_summary → correlation → validation → report`.
+- Correlation themes: `routing_failure`, `interface_physical_issue`, `latency_or_loss`, `policy_block`, `unknown`.
+- Validation impacts: `reachability_loss`, `route_missing`, `packet_loss`, `high_latency`, `acl_deny`.
+- Final report includes anomaly count, key findings, correlated signals, suspected root cause, validation summary, recommended next steps, `requires_human_review` flag, and average confidence.
+- API: `POST /api/agents/incidents/{id}/analyze`, `GET /api/agents/runs/{id}`, `GET /api/agents/incidents/{id}/runs?limit=20`.
+- CLI: `uv run python -m app.agents.runner --incident-id <uuid>`.
+- New tables: `agent_runs`, `agent_steps` (FK cascade-delete from runs).
 
-Phases 0–3 (env audit, scaffold, schema, simulator) remain intact. See `docs/roadmap.md` for what lands when.
+Phases 0–4 (env audit, scaffold, schema, simulator, anomaly engine) remain intact. See `docs/roadmap.md` for what lands when.
 
 ## Repo layout
 
@@ -143,6 +145,37 @@ curl -s http://127.0.0.1:8000/api/anomalies/incidents/<uuid> | jq .
 
 The engine is **deterministic and rule-based** — no ML. Findings are *not* persisted anywhere; they are recomputed on every request from the underlying incident / event / evidence rows.
 
+## Run the agent workflow (Phase 5)
+
+CLI:
+
+```bash
+cd backend
+
+# get an incident id (e.g. from the simulator)
+uv run python -m app.simulator.seed --scenario bgp_neighbor_down
+
+# run the full LangGraph workflow against that incident
+uv run python -m app.agents.runner --incident-id <uuid>
+```
+
+The CLI prints the `IncidentAnalysisReport` as JSON. The `AgentRun` row and its 6 `AgentStep` rows are persisted to Postgres for audit.
+
+HTTP:
+
+```bash
+# run the workflow (synchronous, returns the completed run + all steps)
+curl -X POST http://127.0.0.1:8000/api/agents/incidents/<uuid>/analyze | jq .
+
+# fetch one run with its steps
+curl -s http://127.0.0.1:8000/api/agents/runs/<run_uuid> | jq .
+
+# list runs for an incident, newest first
+curl -s 'http://127.0.0.1:8000/api/agents/incidents/<uuid>/runs?limit=20' | jq .
+```
+
+The agents are **deterministic Python nodes coordinated by LangGraph** — no LLM calls, no model inference. Phase 6 will introduce Ollama-backed reasoning under the same orchestration shape.
+
 ## Run the frontend
 
 ```bash
@@ -174,7 +207,7 @@ Environment variables exported in your shell always override values from `.env`.
 
 - **Real** telemetry collection (SNMP / syslog / streaming) — Phase 3 ships synthetic data only
 - ML / learned anomaly detection — Phase 4 ships deterministic rules only
-- LangGraph multi-agent orchestration (Phase 5)
+- LLM-backed agents — Phase 5 ships LangGraph orchestration with deterministic node implementations only
 - Ollama / RAG integration (Phase 6)
 - Ansible / remediation execution (Phase 7) — recommendation rows can be stored, but nothing is applied to real devices
 - Containerlab network simulation (Phase 8)

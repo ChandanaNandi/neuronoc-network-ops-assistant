@@ -10,6 +10,7 @@ dependencies = [
     "sqlalchemy>=2.0.50",
     "alembic>=1.18.4",
     "psycopg[binary]>=3.3.4",
+    "langgraph>=1.2.2",
 ]
 
 [dependency-groups]

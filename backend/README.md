@@ -44,6 +44,9 @@ Endpoints:
 - `POST /api/simulator/reset` — remove all simulator-created incidents
 - `GET /api/anomalies/incidents/{id}` — run rule engine against one incident (404 if missing)
 - `GET /api/anomalies/open?limit=50` — run engine against all open incidents (limit 1–100)
+- `POST /api/agents/incidents/{id}/analyze` — run the Phase 5 LangGraph workflow, returns the completed `AgentRun` with all 6 steps (404 if incident missing)
+- `GET /api/agents/runs/{id}` — fetch one run + its steps (404 if missing)
+- `GET /api/agents/incidents/{id}/runs?limit=20` — list runs for an incident, newest first (limit 1–100)
 
 Interactive docs at `/docs` once running.
 
@@ -90,6 +93,29 @@ Rules currently shipped (7):
 | R005 | `latency_spike_detected` | `payload.metric_name` ∈ {`latency_ms`, `rtt_ms`} with value > 100 |
 | R006 | `acl_deny_spike_detected` | `event_type=traffic_denied` OR `payload.metric_name == "acl_deny_hits"` with value > 0 |
 | R007 | `route_missing_detected` | `event_type=route_missing` OR evidence `payload.result == "not_in_table"` |
+
+## LangGraph workflow (Phase 5)
+
+`app/agents/` holds the workflow. Six deterministic nodes (no LLM calls) connected START → load_incident → anomaly_detection → evidence_summary → correlation → validation → report → END.
+
+| Node | Reads | Produces |
+|---|---|---|
+| `load_incident` | `Incident`, related `IncidentEvent` & `IncidentEvidence` | state slices |
+| `anomaly_detection` | state | `AnomalyFinding[]` (re-uses Phase 4 engine) |
+| `evidence_summary` | events + evidence | counts, distinct event/evidence types, distinct devices |
+| `correlation` | findings | themes ∈ {`routing_failure`, `interface_physical_issue`, `latency_or_loss`, `policy_block`, `unknown`} |
+| `validation` | events + evidence | impacts ∈ {`reachability_loss`, `route_missing`, `packet_loss`, `high_latency`, `acl_deny`} |
+| `report` | everything above | `IncidentAnalysisReport` dict |
+
+Each node persists an `AgentStep` (with `output_payload` JSONB) for audit. The orchestrating `AgentRun` row tracks `status` (`running` → `completed` / `failed`), `input_payload`, `output_payload` (= final report), and timestamps.
+
+CLI:
+
+```bash
+uv run python -m app.agents.runner --incident-id <uuid>
+```
+
+Runner module: `app/agents/runner.py` (entry point `run_incident_analysis(db, incident_id) -> AgentRun`).
 
 ## Test
 
