@@ -31,22 +31,26 @@ Phases are sequential. Each phase is reviewed and approved before the next begin
 - 7 rules (`R001`–`R007`).
 - Read-only: findings recomputed per request, not persisted (persistence arrives in Phase 5 via `agent_runs`).
 
-## Phase 5 — LangGraph multi-agent orchestration *(current)*
+## Phase 5 — LangGraph multi-agent orchestration ✓
 
-- LangGraph 1.x `StateGraph` workflow in `app/agents/`. **Deterministic Python nodes** - no LLM calls, no learned behavior.
-- 6 nodes wired START → `load_incident` → `anomaly_detection` → `evidence_summary` → `correlation` → `validation` → `report` → END.
-- Correlation produces themes ∈ {`routing_failure`, `interface_physical_issue`, `latency_or_loss`, `policy_block`, `unknown`}; validation produces impacts ∈ {`reachability_loss`, `route_missing`, `packet_loss`, `high_latency`, `acl_deny`}.
-- Final `IncidentAnalysisReport`: anomaly count, key findings, correlated signals, suspected root cause (templated), validation summary, recommended next steps, `requires_human_review`, average confidence.
-- New tables: `agent_runs` (incident_id, workflow_name, status, input/output payload, error, timestamps) and `agent_steps` (run_id, step_name, status, output_payload, error). FK cascade-delete from runs.
-- HTTP: `POST /api/agents/incidents/{id}/analyze`, `GET /api/agents/runs/{id}`, `GET /api/agents/incidents/{id}/runs?limit=20`.
-- CLI: `python -m app.agents.runner --incident-id <uuid>`, prints final report JSON.
-- Synchronous execution only — background jobs and the frontend Agent Inspector are deferred.
+- LangGraph 1.x `StateGraph` workflow in `app/agents/`. Deterministic Python nodes - no LLM calls.
+- 6 nodes; per-run / per-step audit in `agent_runs` / `agent_steps`.
+- HTTP: `POST /api/agents/incidents/{id}/analyze`, `GET /api/agents/runs/{id}`, `GET /api/agents/incidents/{id}/runs`.
+- CLI: `python -m app.agents.runner --incident-id <uuid>`.
 
-## Phase 6 — Ollama / RAG explanation
+## Phase 6 — Ollama RCA explanation + keyword runbook retrieval *(current)*
 
-- Local LLM routing (qwen2.5:7b fast / qwen2.5:14b reasoning).
-- pgvector + embeddings over device configs, past incidents, runbooks.
-- RCA agent uses RAG to ground hypotheses in real artifacts.
+- Optional local-LLM explanation layer in `app/rca/`. **Local Ollama only** - no cloud-LLM packages.
+- `OLLAMA_BASE_URL` (default `http://localhost:11434`) and `OLLAMA_MODEL` (default `qwen2.5:7b-instruct`) added to settings + `.env.example`.
+- 5 Markdown runbooks bundled at `app/knowledge/runbooks/`; keyword scoring in `app/knowledge/retriever.py` (no vector store yet).
+- Thin Ollama client (`app/llm/ollama.py`) - all failure modes collapse to `OllamaUnavailableError`.
+- `RCAExplanation` Pydantic model with `summary`, `likely_root_cause`, `supporting_evidence`, `runbook_references`, `recommended_next_steps`, `unsafe_actions`, `confidence`, `model`, `llm_available`.
+- Prompt constrains the model: *use only provided evidence and runbook snippets; never invent commands / hostnames / prefixes / AS numbers*.
+- Graceful degradation: if Ollama is unreachable / mis-behaving, the explainer returns a deterministic fallback (`llm_available=False`) built from the Phase 5 report; `require_llm=True` opts into a 503 / nonzero-exit instead.
+- HTTP: `POST /api/rca/incidents/{id}/explain[?model=...&require_llm=true]`.
+- CLI: `python -m app.rca.explainer --incident-id <uuid> [--model ...] [--require-llm]`.
+- The explainer **never** executes remediation.
+- Deferred: vector embeddings + pgvector, multi-shot reasoning, agent-tool-calling, persistent RCAExplanation rows.
 
 ## Phase 7 — Remediation planning
 

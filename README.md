@@ -2,19 +2,19 @@
 
 NeuroNOC is an open-source multi-agent AI NetOps platform for network anomaly detection, root-cause analysis, validation, and remediation planning.
 
-## Phase 5 scope *(current)*
+## Phase 6 scope *(current)*
 
-**Deterministic LangGraph multi-agent orchestration.** The Phase 4 anomaly engine becomes one node inside a fixed 6-node workflow that loads an incident, runs anomaly detection, summarizes evidence, correlates signals into themes, validates impact, and produces an `IncidentAnalysisReport`. Every run is persisted (`agent_runs` / `agent_steps`) for audit. **Still no LLM, no RAG, no ML, no remediation execution** — all "agent" logic is pure-Python deterministic templates.
+**Optional local-LLM RCA explanation, with deterministic fallback.** A small bundled runbook knowledge base + keyword retrieval + a thin Ollama client produce a structured `RCAExplanation` for an incident. **If Ollama is unavailable, the explainer falls back to a deterministic explanation built from the Phase 5 report — nothing crashes, nothing blocks.**
 
-- 6 nodes: `load_incident → anomaly_detection → evidence_summary → correlation → validation → report`.
-- Correlation themes: `routing_failure`, `interface_physical_issue`, `latency_or_loss`, `policy_block`, `unknown`.
-- Validation impacts: `reachability_loss`, `route_missing`, `packet_loss`, `high_latency`, `acl_deny`.
-- Final report includes anomaly count, key findings, correlated signals, suspected root cause, validation summary, recommended next steps, `requires_human_review` flag, and average confidence.
-- API: `POST /api/agents/incidents/{id}/analyze`, `GET /api/agents/runs/{id}`, `GET /api/agents/incidents/{id}/runs?limit=20`.
-- CLI: `uv run python -m app.agents.runner --incident-id <uuid>`.
-- New tables: `agent_runs`, `agent_steps` (FK cascade-delete from runs).
+- Local Ollama only (`http://localhost:11434` by default). **No OpenAI, Anthropic, or cloud LLM packages added.**
+- Retrieval: deterministic keyword scoring over 5 bundled Markdown runbooks (`bgp`, `interface_errors`, `latency_loss`, `route_missing`, `policy_acl`). **Not a vector store yet.**
+- Prompt explicitly constrains the model: *use only provided evidence and runbook snippets; do not invent commands, hostnames, interfaces, prefixes, vendors, or AS numbers*.
+- Output validated against a `RCAExplanation` Pydantic schema; if the model's JSON doesn't match, we fall back too.
+- API: `POST /api/rca/incidents/{id}/explain` with optional `?model=…&require_llm=true`.
+- CLI: `uv run python -m app.rca.explainer --incident-id <uuid> [--model …] [--require-llm]`.
+- New env vars: `OLLAMA_BASE_URL`, `OLLAMA_MODEL` (default `qwen2.5:7b-instruct`).
 
-Phases 0–4 (env audit, scaffold, schema, simulator, anomaly engine) remain intact. See `docs/roadmap.md` for what lands when.
+Phases 0–5 remain intact. See `docs/roadmap.md` for what lands when.
 
 ## Repo layout
 
@@ -176,6 +176,47 @@ curl -s 'http://127.0.0.1:8000/api/agents/incidents/<uuid>/runs?limit=20' | jq .
 
 The agents are **deterministic Python nodes coordinated by LangGraph** — no LLM calls, no model inference. Phase 6 will introduce Ollama-backed reasoning under the same orchestration shape.
 
+## Generate RCA explanations (Phase 6, optional Ollama)
+
+CLI:
+
+```bash
+cd backend
+
+# Uses Ollama if it is reachable; otherwise prints a deterministic fallback.
+uv run python -m app.rca.explainer --incident-id <uuid>
+
+# Override the model (default OLLAMA_MODEL):
+uv run python -m app.rca.explainer --incident-id <uuid> --model qwen2.5:14b-instruct
+
+# Fail loudly when Ollama is unreachable instead of falling back:
+uv run python -m app.rca.explainer --incident-id <uuid> --require-llm
+```
+
+HTTP:
+
+```bash
+# Synchronous; returns 200 with a deterministic fallback if Ollama is down.
+curl -s -X POST 'http://127.0.0.1:8000/api/rca/incidents/<uuid>/explain' | jq .
+
+# require_llm=true returns 503 if Ollama is down (good for "experimental" UI badges).
+curl -s -X POST 'http://127.0.0.1:8000/api/rca/incidents/<uuid>/explain?require_llm=true' | jq .
+```
+
+Configuration:
+
+```
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:7b-instruct      # 7b for fast triage; bump to 14b for richer reasoning
+```
+
+Notes:
+
+- The prompt explicitly tells the model to *use only provided evidence and runbook snippets*, never to invent commands / hostnames / prefixes / AS numbers.
+- Runbooks live in `backend/app/knowledge/runbooks/*.md`. Retrieval is **keyword-based** (deterministic, no embeddings, no vector store) — real RAG arrives later if and when retrieval quality becomes the bottleneck.
+- The explainer **never** executes a remediation action. Every actionable step is gated on explicit human approval.
+- Ollama is required to run on the **host** (Apple Metal GPU); containerized Ollama on macOS is CPU-only and ~10–20× slower.
+
 ## Run the frontend
 
 ```bash
@@ -207,8 +248,8 @@ Environment variables exported in your shell always override values from `.env`.
 
 - **Real** telemetry collection (SNMP / syslog / streaming) — Phase 3 ships synthetic data only
 - ML / learned anomaly detection — Phase 4 ships deterministic rules only
-- LLM-backed agents — Phase 5 ships LangGraph orchestration with deterministic node implementations only
-- Ollama / RAG integration (Phase 6)
+- Cloud LLMs (OpenAI / Anthropic / etc.) — Phase 6 ships local-Ollama only, with a deterministic fallback
+- Vector RAG — Phase 6 ships keyword retrieval over bundled Markdown runbooks
 - Ansible / remediation execution (Phase 7) — recommendation rows can be stored, but nothing is applied to real devices
 - Containerlab network simulation (Phase 8)
 - Authentication / authorization
@@ -217,4 +258,4 @@ Environment variables exported in your shell always override values from `.env`.
 
 ## License & status
 
-Pre-alpha, open-source. Phase 1 scaffold — not usable for real network operations yet.
+Pre-alpha, open-source. Phases 1–6 implemented (scaffold, schema, simulator, anomaly engine, deterministic LangGraph orchestration, local-Ollama RCA explanation with deterministic fallback). Not yet usable for real network operations — no real telemetry collection, no remediation execution.

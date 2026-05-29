@@ -19,6 +19,7 @@ class Settings(BaseSettings):
         "postgresql+psycopg://neuronoc:neuronoc_dev_password@localhost:5433/neuronoc"
     )
     OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "qwen2.5:7b-instruct"
 
 
 settings = Settings()

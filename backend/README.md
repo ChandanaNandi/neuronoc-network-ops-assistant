@@ -47,6 +47,7 @@ Endpoints:
 - `POST /api/agents/incidents/{id}/analyze` — run the Phase 5 LangGraph workflow, returns the completed `AgentRun` with all 6 steps (404 if incident missing)
 - `GET /api/agents/runs/{id}` — fetch one run + its steps (404 if missing)
 - `GET /api/agents/incidents/{id}/runs?limit=20` — list runs for an incident, newest first (limit 1–100)
+- `POST /api/rca/incidents/{id}/explain[?model=…&require_llm=true]` — Phase 6 RCA explanation (Ollama-backed when reachable, deterministic fallback otherwise; 503 if `require_llm=true` and Ollama is down)
 
 Interactive docs at `/docs` once running.
 
@@ -116,6 +117,39 @@ uv run python -m app.agents.runner --incident-id <uuid>
 ```
 
 Runner module: `app/agents/runner.py` (entry point `run_incident_analysis(db, incident_id) -> AgentRun`).
+
+## RCA explainer (Phase 6 — optional Ollama)
+
+Adds a thin local-LLM explanation layer on top of the deterministic Phase 5 workflow. **Local Ollama only — no cloud LLM packages.**
+
+Modules:
+- `app/knowledge/runbooks/` — 5 Markdown runbooks (bgp, interface_errors, latency_loss, route_missing, policy_acl).
+- `app/knowledge/retriever.py` — `retrieve_runbooks(query, limit=3)`, keyword scoring (title weight 2x, body weight 1x), deterministic tie-break by filename.
+- `app/llm/ollama.py` — `generate_ollama_json(prompt, model=None, timeout_seconds=60)` plus `OllamaUnavailableError`. POSTs `/api/generate` with `format=json, stream=false`. All failure modes (network, non-2xx, empty body, malformed JSON) collapse to `OllamaUnavailableError`.
+- `app/rca/explainer.py` — `RCAExplanation` Pydantic model, `build_rca_prompt(report, runbooks) -> str`, and `generate_rca_explanation(db, incident_id, model=None, require_llm=False) -> RCAExplanation`.
+
+Flow inside `generate_rca_explanation`:
+1. Verify the incident exists (else `IncidentNotFoundError`).
+2. Reuse the most recent completed `AgentRun.output_payload`; otherwise drive the Phase 5 workflow to create one.
+3. Retrieve up to 3 runbooks using `incident_type + key_findings + correlated_signals` as the query.
+4. Build the prompt (constraint: *use only the provided evidence and runbook snippets*).
+5. Call Ollama. If it succeeds, validate the parsed JSON against `RCAExplanation` and return.
+6. On any Ollama failure: if `require_llm=True`, re-raise `OllamaUnavailableError`; else return a deterministic fallback with `llm_available=False`.
+
+CLI:
+
+```bash
+uv run python -m app.rca.explainer --incident-id <uuid> [--model <name>] [--require-llm]
+```
+
+Configuration (project-root `.env`):
+
+```
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:7b-instruct
+```
+
+The explainer **never** executes a remediation action. The fallback always includes the unsafe-actions guardrail line.
 
 ## Test
 
