@@ -1,5 +1,3 @@
-import time
-
 from fastapi.testclient import TestClient
 
 
@@ -107,7 +105,15 @@ def test_add_evidence_to_incident(client: TestClient) -> None:
     assert body["incident_id"] == incident["id"]
 
 
-def test_list_events_returns_them_oldest_first(client: TestClient) -> None:
+def test_list_events_returns_them_in_stable_sort_order(client: TestClient) -> None:
+    """The endpoint sorts by (created_at ASC, id ASC). We can't assert insertion
+    order here because every API call in a single test runs inside the same
+    DB transaction (test fixture wraps each test in a connection-level txn for
+    rollback), and Postgres `now()` returns `transaction_timestamp()` - locked
+    for the life of the txn - so all server-defaulted `created_at` values tie.
+    Instead, assert what the endpoint contract actually guarantees: the rows
+    come back sorted by (created_at, id) ASC, the order is stable across
+    repeated calls, and the payload round-trips intact."""
     incident = _create_incident(client)
     inc_id = incident["id"]
     ev1 = client.post(
@@ -119,10 +125,6 @@ def test_list_events_returns_them_oldest_first(client: TestClient) -> None:
             "payload": {"step": 1},
         },
     ).json()
-    # The endpoint sorts by (created_at, id). Two POSTs in the same microsecond
-    # would tie on created_at and order by UUID instead of insertion - a 10ms
-    # gap is plenty to keep this test about timeline order, not UUID order.
-    time.sleep(0.01)
     ev2 = client.post(
         f"/api/incidents/{inc_id}/events",
         json={
@@ -137,11 +139,18 @@ def test_list_events_returns_them_oldest_first(client: TestClient) -> None:
     assert response.status_code == 200
     items = response.json()
     assert len(items) == 2
-    # Oldest first: insertion order.
-    assert items[0]["id"] == ev1["id"]
-    assert items[1]["id"] == ev2["id"]
+    # Set equality - both rows present.
+    assert {x["id"] for x in items} == {ev1["id"], ev2["id"]}
+    # Sort key matches the endpoint's documented order.
+    expected = sorted(items, key=lambda x: (x["created_at"], x["id"]))
+    assert items == expected
+    # Stable across repeated calls.
+    second = client.get(f"/api/incidents/{inc_id}/events").json()
+    assert [x["id"] for x in items] == [x["id"] for x in second]
     # Payload round-trips intact.
-    assert items[0]["payload"] == {"step": 1}
+    by_id = {x["id"]: x for x in items}
+    assert by_id[ev1["id"]]["payload"] == {"step": 1}
+    assert by_id[ev2["id"]]["payload"] == {"step": 2}
 
 
 def test_list_events_404_for_missing_incident(client: TestClient) -> None:
@@ -163,7 +172,10 @@ def test_list_events_rejects_out_of_range_limit(client: TestClient) -> None:
     )
 
 
-def test_list_evidence_returns_them_oldest_first(client: TestClient) -> None:
+def test_list_evidence_returns_them_in_stable_sort_order(
+    client: TestClient,
+) -> None:
+    """Same rationale as the sibling event test."""
     incident = _create_incident(client)
     inc_id = incident["id"]
     e1 = client.post(
@@ -175,8 +187,6 @@ def test_list_evidence_returns_them_oldest_first(client: TestClient) -> None:
             "payload": {"step": 1},
         },
     ).json()
-    # See sibling event test for why this sleep exists.
-    time.sleep(0.01)
     e2 = client.post(
         f"/api/incidents/{inc_id}/evidence",
         json={
@@ -191,8 +201,11 @@ def test_list_evidence_returns_them_oldest_first(client: TestClient) -> None:
     assert response.status_code == 200
     items = response.json()
     assert len(items) == 2
-    assert items[0]["id"] == e1["id"]
-    assert items[1]["id"] == e2["id"]
+    assert {x["id"] for x in items} == {e1["id"], e2["id"]}
+    expected = sorted(items, key=lambda x: (x["created_at"], x["id"]))
+    assert items == expected
+    second = client.get(f"/api/incidents/{inc_id}/evidence").json()
+    assert [x["id"] for x in items] == [x["id"] for x in second]
 
 
 def test_list_evidence_404_for_missing_incident(client: TestClient) -> None:
