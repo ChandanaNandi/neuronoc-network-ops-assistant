@@ -319,7 +319,215 @@ def test_cli_collect_prints_summary_json(
     assert parsed["established_count"] == 6
 
 
-def test_cli_requires_collect_flag() -> None:
+def test_cli_requires_mode_flag() -> None:
+    """Mutex group is required: neither --collect nor --watch fails fast."""
     with pytest.raises(SystemExit) as exc:
         collector_module.main([])
     assert exc.value.code == 2
+
+
+def test_cli_collect_and_watch_are_mutually_exclusive() -> None:
+    with pytest.raises(SystemExit) as exc:
+        collector_module.main(["--collect", "--watch", "--iterations", "1"])
+    assert exc.value.code == 2
+
+
+# ---------- watch mode ----------
+
+
+def _stub_session(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    @contextmanager
+    def fake_session_local():
+        yield db_session
+
+    monkeypatch.setattr(collector_module, "SessionLocal", fake_session_local)
+
+
+def _stub_sleep(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    calls: list[int] = []
+
+    def fake_sleep(seconds: int) -> None:
+        calls.append(seconds)
+
+    monkeypatch.setattr(collector_module.time, "sleep", fake_sleep)
+    return calls
+
+
+def _stub_collect_returning(
+    summaries: list[object], monkeypatch: pytest.MonkeyPatch
+) -> list[object]:
+    """Replace collect_lab_bgp_snapshot with a function that pops from `summaries`
+    (in order). A list entry that is an Exception instance is raised instead of
+    returned. Returns a captured-calls list for assertions."""
+    calls: list[object] = []
+    queue = list(summaries)
+
+    def fake_collect(db, runner=None, routers=None):  # noqa: ARG001
+        calls.append(True)
+        if not queue:
+            raise AssertionError("collect called more times than summaries queued")
+        item = queue.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(collector_module, "collect_lab_bgp_snapshot", fake_collect)
+    return calls
+
+
+def _ok_summary() -> "collector_module.LabBgpCollectionSummary":
+    from uuid import uuid4
+
+    return collector_module.LabBgpCollectionSummary(
+        incident_id=uuid4(),
+        routers_seen=4,
+        peers_seen=6,
+        established_count=6,
+        non_established_count=0,
+        events_created=10,
+    )
+
+
+def _summary_with_errors() -> "collector_module.LabBgpCollectionSummary":
+    from uuid import uuid4
+
+    return collector_module.LabBgpCollectionSummary(
+        incident_id=uuid4(),
+        routers_seen=3,
+        peers_seen=5,
+        established_count=5,
+        non_established_count=0,
+        events_created=9,
+        errors=["branch-1: vtysh exit 1: container not running"],
+    )
+
+
+def test_watch_requires_iterations(db_session: Session) -> None:
+    # --watch without --iterations -> argparse exits 2
+    with pytest.raises(SystemExit) as exc:
+        collector_module.main(["--watch"])
+    assert exc.value.code == 2
+
+
+def test_watch_iterations_lower_bound(db_session: Session) -> None:
+    with pytest.raises(SystemExit) as exc:
+        collector_module.main(["--watch", "--iterations", "0"])
+    assert exc.value.code == 2
+
+
+def test_watch_iterations_upper_bound(db_session: Session) -> None:
+    with pytest.raises(SystemExit) as exc:
+        collector_module.main(["--watch", "--iterations", "101"])
+    assert exc.value.code == 2
+
+
+def test_watch_interval_seconds_bounds(db_session: Session) -> None:
+    with pytest.raises(SystemExit) as exc:
+        collector_module.main(
+            ["--watch", "--iterations", "1", "--interval-seconds", "0"]
+        )
+    assert exc.value.code == 2
+    with pytest.raises(SystemExit) as exc:
+        collector_module.main(
+            ["--watch", "--iterations", "1", "--interval-seconds", "3601"]
+        )
+    assert exc.value.code == 2
+
+
+def test_watch_runs_exactly_N_iterations_with_N_minus_1_sleeps(
+    db_session: Session,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_session(db_session, monkeypatch)
+    sleeps = _stub_sleep(monkeypatch)
+    calls = _stub_collect_returning(
+        [_ok_summary(), _ok_summary(), _ok_summary()], monkeypatch
+    )
+
+    exit_code = collector_module.main(
+        ["--watch", "--iterations", "3", "--interval-seconds", "7"]
+    )
+    assert exit_code == 0
+    assert len(calls) == 3
+    assert sleeps == [7, 7]  # N-1 sleeps, each = --interval-seconds
+
+    out_lines = capsys.readouterr().out.strip().split("\n")
+    assert len(out_lines) == 3
+    parsed = [json.loads(line) for line in out_lines]
+    for row in parsed:
+        assert row["routers_seen"] == 4
+        assert row["established_count"] == 6
+
+
+def test_watch_continues_past_iteration_with_collection_errors(
+    db_session: Session,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a per-iteration summary contains `errors` (e.g. a router was down
+    for that scrape), the loop must keep running through all iterations."""
+    _stub_session(db_session, monkeypatch)
+    _stub_sleep(monkeypatch)
+    _stub_collect_returning(
+        [_ok_summary(), _summary_with_errors(), _ok_summary()], monkeypatch
+    )
+
+    exit_code = collector_module.main(["--watch", "--iterations", "3"])
+    assert exit_code == 0
+
+    out_lines = capsys.readouterr().out.strip().split("\n")
+    assert len(out_lines) == 3
+    parsed = [json.loads(line) for line in out_lines]
+    assert parsed[1]["errors"] and "branch-1" in parsed[1]["errors"][0]
+
+
+def test_watch_continues_past_unexpected_exception(
+    db_session: Session,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An UNEXPECTED exception from collect_lab_bgp_snapshot is caught,
+    logged as a JSON error row, and the loop continues."""
+    _stub_session(db_session, monkeypatch)
+    _stub_sleep(monkeypatch)
+    _stub_collect_returning(
+        [
+            _ok_summary(),
+            RuntimeError("simulated unexpected blip"),
+            _ok_summary(),
+        ],
+        monkeypatch,
+    )
+
+    exit_code = collector_module.main(["--watch", "--iterations", "3"])
+    assert exit_code == 0
+
+    out_lines = capsys.readouterr().out.strip().split("\n")
+    assert len(out_lines) == 3
+    parsed = [json.loads(line) for line in out_lines]
+    assert "incident_id" in parsed[0]
+    assert "error" in parsed[1]
+    assert "RuntimeError" in parsed[1]["error"]
+    assert "simulated unexpected blip" in parsed[1]["error"]
+    assert "incident_id" in parsed[2]
+
+
+def test_collect_single_shot_unchanged_after_cli_restructure(
+    db_session: Session,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 11A is additive - the original `--collect` flow must keep
+    behaving identically."""
+    _stub_session(db_session, monkeypatch)
+    monkeypatch.setattr(
+        collector_module, "_default_runner", _all_healthy_runner()
+    )
+
+    exit_code = collector_module.main(["--collect"])
+    assert exit_code == 0
+
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["routers_seen"] == 4
+    assert parsed["established_count"] == 6

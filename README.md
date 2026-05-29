@@ -260,6 +260,14 @@ curl -s -X POST http://127.0.0.1:8000/api/lab/collect/bgp | jq .
 
 Each invocation creates a fresh `Incident` tagged `[lab-collector]` plus one `IncidentEvent` per peer. Re-running gives you another fresh row — there is no background ingester yet, that is intentionally out of scope.
 
+**Dev-only bounded loop** (Phase 11A — see `backend/README.md` for details):
+
+```bash
+uv run python -m app.lab.collector --watch --iterations 6 --interval-seconds 10
+```
+
+Hard caps: 1–100 iterations, 1–3600 s interval. No `--forever`, no daemon, no background scheduler. Exits cleanly after N iterations.
+
 The collector calls `docker exec neuronoc-lab-<router> vtysh -c "show ip bgp summary json"`; it never touches a config-changing command. If a router is down or its output isn't JSON, you get a `lab_bgp_collection_error` event instead of a crash.
 
 ## Generate a remediation plan (Phase 7, plan-only)

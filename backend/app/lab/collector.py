@@ -21,6 +21,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -307,29 +308,114 @@ def collect_lab_bgp_snapshot(
 # ---------- CLI ----------
 
 
+# Bounded-loop guardrails. The `--watch` mode is dev-only; the upper bounds
+# are deliberately small to make it impossible to accidentally turn this into
+# a long-running background ingester.
+MAX_ITERATIONS = 100
+MAX_INTERVAL_SECONDS = 3600
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="app.lab.collector",
         description=(
-            "Run a ONE-SHOT BGP snapshot collection against the Phase 8B "
-            "FRR Compose lab. Read-only; never executes a config change."
+            "Run BGP snapshot collection(s) against the Phase 8B FRR Compose "
+            "lab. Read-only; never executes a config change. Two modes: "
+            "--collect (one shot) or --watch (a bounded dev loop, max "
+            f"{MAX_ITERATIONS} iterations)."
+        ),
+    )
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--collect",
+        action="store_true",
+        help="Run a single collection and exit.",
+    )
+    mode.add_argument(
+        "--watch",
+        action="store_true",
+        help=(
+            "Run --iterations collections on a fixed interval. Dev-only; "
+            "bounded so this cannot turn into a background ingester. "
+            "REQUIRES --iterations."
         ),
     )
     parser.add_argument(
-        "--collect",
-        action="store_true",
-        required=True,
-        help="Required. Run a single collection and exit.",
+        "--iterations",
+        type=int,
+        default=None,
+        help=(
+            f"Required with --watch. Number of collections to perform "
+            f"(1..{MAX_ITERATIONS})."
+        ),
+    )
+    parser.add_argument(
+        "--interval-seconds",
+        type=int,
+        default=10,
+        help=(
+            f"Seconds to wait between iterations (1..{MAX_INTERVAL_SECONDS}). "
+            "Only used with --watch."
+        ),
     )
     return parser
+
+
+def _run_watch(iterations: int, interval_seconds: int) -> int:
+    """Dev-only bounded watch loop.
+
+    Behavior on errors:
+    - Recoverable per-router scrape failures already surface as
+      `errors` inside each iteration's `LabBgpCollectionSummary`. The watch
+      loop logs them and keeps going.
+    - An UNEXPECTED exception from `collect_lab_bgp_snapshot` (e.g. the DB
+      drops out, the LAB_ROUTERS list is malformed) is caught per-iteration,
+      logged as a JSON error row to stdout, and the loop continues. This
+      makes the loop resilient to a transient blip without hiding it - every
+      iteration produces exactly one newline-delimited JSON line on stdout
+      so a watcher can `tail -f` or pipe to `jq`.
+    """
+    for i in range(iterations):
+        try:
+            with SessionLocal() as db:
+                summary = collect_lab_bgp_snapshot(db)
+            print(
+                json.dumps(summary.model_dump(mode="json")), flush=True
+            )
+        except Exception as exc:  # noqa: BLE001 - we want resilient loop
+            print(
+                json.dumps(
+                    {
+                        "iteration": i + 1,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                ),
+                flush=True,
+            )
+        if i < iterations - 1:
+            time.sleep(interval_seconds)
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    if not args.collect:  # pragma: no cover - argparse enforces required
-        parser.error("--collect is required")
 
+    if args.watch:
+        if args.iterations is None:
+            parser.error("--watch requires --iterations N")
+        if not 1 <= args.iterations <= MAX_ITERATIONS:
+            parser.error(
+                f"--iterations must be between 1 and {MAX_ITERATIONS}"
+            )
+        if not 1 <= args.interval_seconds <= MAX_INTERVAL_SECONDS:
+            parser.error(
+                "--interval-seconds must be between 1 and "
+                f"{MAX_INTERVAL_SECONDS}"
+            )
+        return _run_watch(args.iterations, args.interval_seconds)
+
+    # --collect (single shot) - kept exactly as before.
     with SessionLocal() as db:
         summary = collect_lab_bgp_snapshot(db)
 

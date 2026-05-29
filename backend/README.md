@@ -207,6 +207,41 @@ HTTP:
 
 Read-only safety: the collector only runs `vtysh -c "show ip bgp summary json"`. No config-changing commands, no `clear`, no `conf t`.
 
+### Bounded dev-only watch loop (Phase 11A)
+
+For "watch lab BGP appear in the console without clicking Collect every few seconds", the same module supports a **bounded** loop. This is **dev-only**, not a service:
+
+```bash
+# bring the lab up first (see infra/lab/README.md)
+./infra/lab/scripts/lab.sh up
+
+# then in another terminal:
+cd backend
+uv run python -m app.lab.collector --watch --iterations 6 --interval-seconds 10
+```
+
+Hard caps enforced in code: `1 ≤ iterations ≤ 100`, `1 ≤ interval-seconds ≤ 3600`. There is no infinite-loop mode, no `--forever`, no background-fork, no cron / launchd integration, no auto-start from the web app. The loop exits cleanly after N iterations and there is no daemon to stop.
+
+Output is **newline-delimited JSON**, one `LabBgpCollectionSummary` per line — pipe to `jq` if you want:
+
+```bash
+uv run python -m app.lab.collector --watch --iterations 3 --interval-seconds 5 \
+  | jq -c '{i: .incident_id[:8], est: .established_count, err: .errors|length}'
+```
+
+Failure handling: per-router scrape failures already surface as the summary's `errors` field and the loop keeps going. If a whole iteration raises an unexpected exception (e.g. DB blip), the loop catches it, prints a JSON `{"iteration": N, "error": "..."}` row, and continues — so a transient blip doesn't kill the run.
+
+Cleanup when done:
+
+```bash
+./infra/lab/scripts/lab.sh down
+# optional: drop the lab-tagged incidents from this watch run
+psql "postgresql://neuronoc:neuronoc_dev_password@localhost:5433/neuronoc" \
+  -c "DELETE FROM incidents WHERE summary LIKE '[lab-collector]%';"
+```
+
+In the operator console, new lab incidents appear after the next `Refresh` click or after the next 15 s status-grid poll — no UI change is needed for this feature.
+
 ## Test
 
 ```bash

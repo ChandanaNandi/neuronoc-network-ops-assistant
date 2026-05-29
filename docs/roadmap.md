@@ -69,14 +69,19 @@ Phases are sequential. Each phase is reviewed and approved before the next begin
 - eBGP fully Established; loopbacks advertised; `lab.sh` helper for `up`/`down`/`ps`/`logs`/`cli`/`bgp`.
 - `pull_policy: never` so the lab refuses to silently pull a different FRR version.
 
-### Phase 8C — one-shot BGP collector *(current)*
+### Phase 8C — one-shot BGP collector ✓
 
 - `app/lab/collector.py` scrapes the four lab routers via `docker exec` + `vtysh -c "show ip bgp summary json"` (read-only only).
 - Persists into the **existing** `Incident` / `IncidentEvent` schema - no migration.
 - One `Incident` per invocation, tagged `[lab-collector]` in `summary`; events: `lab_bgp_peer_established`, `lab_bgp_peer_not_established`, `lab_bgp_prefix_snapshot`, `lab_bgp_collection_error`.
-- Severity derived: low (all good) / medium (some peers down) / high (any collection error).
-- HTTP: `POST /api/lab/collect/bgp` (synchronous, 201). CLI: `python -m app.lab.collector --collect`.
-- One-shot only - no background daemon, no scheduler, no continuous ingest. That arrives if and when the project needs streaming telemetry.
+- HTTP: `POST /api/lab/collect/bgp`. CLI: `python -m app.lab.collector --collect`.
+
+### Phase 11A — Bounded dev-only watch loop *(current)*
+
+- `app/lab/collector.py` grows a `--watch --iterations N [--interval-seconds S]` mode that calls `collect_lab_bgp_snapshot` N times with N-1 sleeps in between, then exits. Hard caps `1 ≤ iterations ≤ 100`, `1 ≤ interval-seconds ≤ 3600` enforced by `parser.error` so the bounds can never silently overflow.
+- Output is newline-delimited JSON, one summary per iteration. Per-router scrape failures already surface in the summary's `errors` field; an unexpected exception is caught, emitted as a `{"iteration": N, "error": "..."}` row, and the loop continues.
+- Original `--collect` single-shot mode unchanged; the two modes share a mutually-exclusive required argparse group.
+- **No new DB tables, no migrations, no service, no daemon, no scheduler.** Dev/local only. No auto-trigger from the web app. New lab incidents show up in the operator console after the next Refresh or the 15 s status-grid poll.
 
 ### Later sub-phases (deferred)
 
