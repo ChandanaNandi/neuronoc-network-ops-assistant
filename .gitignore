@@ -1,0 +1,51 @@
+# Environment files (committed example only)
+.env
+.env.local
+.env.*.local
+
+# macOS
+.DS_Store
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+backend/.venv/
+
+# Coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.cache/
+
+# Node / Vite / TypeScript
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.tsbuildinfo
+node_modules/
+
+# Build / OS misc
+*.log
+.tmp/

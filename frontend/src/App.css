@@ -1,0 +1,135 @@
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app__header {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid #1f242b;
+  background: #151a21;
+}
+
+.app__brand {
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.app__tagline {
+  font-size: 0.85rem;
+  color: #8b95a3;
+}
+
+.app__status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  padding: 1.5rem 2rem;
+}
+
+.status-card {
+  background: #151a21;
+  border: 1px solid #1f242b;
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+}
+
+.status-card__label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #8b95a3;
+  margin-bottom: 0.5rem;
+}
+
+.status-card__value {
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.status-card__status {
+  text-transform: capitalize;
+}
+
+.status-card__detail {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: #6b7785;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4a5462;
+  display: inline-block;
+}
+
+.status-dot--online {
+  background: #3fb950;
+}
+
+.status-dot--offline {
+  background: #f85149;
+}
+
+.status-dot--unknown {
+  background: #d29922;
+}
+
+.app__main {
+  flex: 1;
+  padding: 0 2rem 2rem;
+}
+
+.panel {
+  background: #151a21;
+  border: 1px solid #1f242b;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.panel__header {
+  padding: 0.9rem 1.25rem;
+  border-bottom: 1px solid #1f242b;
+  font-weight: 600;
+}
+
+.panel__body {
+  padding: 1.25rem;
+  min-height: 240px;
+}
+
+.panel__body--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-state {
+  text-align: center;
+  color: #8b95a3;
+}
+
+.empty-state__icon {
+  font-size: 2rem;
+  color: #4a5462;
+  margin-bottom: 0.5rem;
+  line-height: 1;
+}
+
+.empty-state__title {
+  font-size: 1rem;
+  margin-bottom: 0.25rem;
+  color: #e6e8eb;
+}
+
+.empty-state__hint {
+  font-size: 0.85rem;
+}

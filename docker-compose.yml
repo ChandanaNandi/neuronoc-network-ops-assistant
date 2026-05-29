@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: neuronoc-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-neuronoc}
+      POSTGRES_USER: ${POSTGRES_USER:-neuronoc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-neuronoc_dev_password}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - neuronoc_postgres_data:/var/lib/postgresql/data
+      - ./infra/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-neuronoc} -d ${POSTGRES_DB:-neuronoc}
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  neuronoc_postgres_data:
+    name: neuronoc_postgres_data
