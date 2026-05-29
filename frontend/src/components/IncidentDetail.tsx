@@ -9,6 +9,7 @@ import {
   type Incident,
   type IncidentEvent,
   type IncidentEvidence,
+  type Operator,
   type RCAExplanation,
   type Recommendation,
 } from '../api'
@@ -71,14 +72,20 @@ export function IncidentDetail({
   const [running, setRunning] = useState<ActionKey | null>(null)
   const [actionMsg, setActionMsg] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Phase 13A operator list for the dropdown. `null` means we haven't loaded
+  // it yet; `[]` means load returned empty or failed. In either non-loaded
+  // case the form falls back cleanly to the free-form name input.
+  const [operators, setOperators] = useState<Operator[] | null>(null)
   // At most one inline approval form is open at a time. The draft captures
-  // which plan it belongs to, the kind of decision (approve/reject), and
-  // the in-progress operator name + note. Phase 10B replaces the Phase 10A
-  // window.prompt flow.
+  // which plan it belongs to, the kind of decision, the chosen operator id
+  // (or empty string when using the manual name fallback), the typed-in name
+  // fallback, and the optional note. Phase 10B replaced the Phase 10A
+  // window.prompt flow; Phase 13A adds operator_id.
   const [approvalDraft, setApprovalDraft] = useState<{
     recId: string
     kind: 'approve' | 'reject'
-    operator: string
+    operatorId: string
+    operatorName: string
     note: string
   } | null>(null)
   const [submittingApproval, setSubmittingApproval] = useState(false)
@@ -117,6 +124,17 @@ export function IncidentDetail({
         onError(`Incident detail: ${msg}`)
       })
 
+    // Phase 13A: load operator list in parallel. A failure here MUST NOT
+    // block detail load; the form falls back to the free-form name input.
+    api
+      .listOperators()
+      .then((list) => {
+        if (alive) setOperators(list)
+      })
+      .catch(() => {
+        if (alive) setOperators([])
+      })
+
     return () => {
       alive = false
     }
@@ -129,7 +147,8 @@ export function IncidentDetail({
     setApprovalDraft({
       recId: recommendationId,
       kind,
-      operator: '',
+      operatorId: '',
+      operatorName: '',
       note: '',
     })
   }
@@ -138,17 +157,27 @@ export function IncidentDetail({
     setApprovalDraft(null)
   }
 
+  function draftHasIdentity(d: NonNullable<typeof approvalDraft>) {
+    // operator_id wins when chosen; otherwise the manual name must be non-empty.
+    return Boolean(d.operatorId || d.operatorName.trim())
+  }
+
   async function submitApprovalForm() {
     if (!approvalDraft) return
-    const operatorName = approvalDraft.operator.trim()
-    if (!operatorName) return // submit is disabled in this state anyway
+    if (!draftHasIdentity(approvalDraft)) return // submit is disabled here
 
     setSubmittingApproval(true)
     try {
-      const body = {
-        operator_name: operatorName,
-        note: approvalDraft.note.trim() || null,
-      }
+      const body =
+        approvalDraft.operatorId
+          ? {
+              operator_id: approvalDraft.operatorId,
+              note: approvalDraft.note.trim() || null,
+            }
+          : {
+              operator_name: approvalDraft.operatorName.trim(),
+              note: approvalDraft.note.trim() || null,
+            }
       if (approvalDraft.kind === 'approve') {
         await api.approveRecommendation(approvalDraft.recId, body)
       } else {
@@ -534,22 +563,58 @@ export function IncidentDetail({
                     Confirm {approvalDraft.kind} - records intent only;
                     no execution.
                   </div>
+                  {operators && operators.length > 0 && (
+                    <label className="approval-form__field">
+                      <span className="approval-form__label">
+                        Operator
+                      </span>
+                      <select
+                        className="approval-form__input"
+                        aria-label="operator"
+                        value={approvalDraft.operatorId}
+                        onChange={(e) =>
+                          setApprovalDraft({
+                            ...approvalDraft,
+                            operatorId: e.target.value,
+                          })
+                        }
+                        disabled={submittingApproval}
+                      >
+                        <option value="">— select an operator —</option>
+                        {operators.map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {o.display_name} ({o.role})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                   <label className="approval-form__field">
-                    <span className="approval-form__label">Operator name</span>
+                    <span className="approval-form__label">
+                      {operators && operators.length > 0
+                        ? 'Or type a custom operator name'
+                        : 'Operator name'}
+                    </span>
                     <input
                       type="text"
                       className="approval-form__input"
                       aria-label="operator name"
-                      autoFocus
-                      required
-                      value={approvalDraft.operator}
+                      autoFocus={!operators || operators.length === 0}
+                      value={approvalDraft.operatorName}
                       onChange={(e) =>
                         setApprovalDraft({
                           ...approvalDraft,
-                          operator: e.target.value,
+                          operatorName: e.target.value,
                         })
                       }
-                      disabled={submittingApproval}
+                      disabled={
+                        submittingApproval || Boolean(approvalDraft.operatorId)
+                      }
+                      placeholder={
+                        approvalDraft.operatorId
+                          ? '(disabled while an operator is selected)'
+                          : ''
+                      }
                     />
                   </label>
                   <label className="approval-form__field">
@@ -575,7 +640,7 @@ export function IncidentDetail({
                       type="submit"
                       className="btn btn--primary btn--action"
                       disabled={
-                        !approvalDraft.operator.trim() || submittingApproval
+                        !draftHasIdentity(approvalDraft) || submittingApproval
                       }
                     >
                       {submittingApproval

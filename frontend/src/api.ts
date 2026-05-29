@@ -12,6 +12,19 @@ export type Severity = 'low' | 'medium' | 'high' | 'critical'
 export type IncidentStatus = 'open' | 'investigating' | 'resolved'
 export type RecommendationRisk = 'low' | 'medium' | 'high'
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected'
+export type OperatorRole = 'operator' | 'admin'
+
+export interface Operator {
+  id: string
+  display_name: string
+  role: OperatorRole
+  created_at: string
+}
+
+export interface OperatorCreate {
+  display_name: string
+  role?: OperatorRole
+}
 
 export interface Incident {
   id: string
@@ -107,12 +120,16 @@ export interface Recommendation {
   created_at: string
   approval_status: ApprovalStatus
   approved_by: string | null
+  approved_by_operator_id: string | null
   approved_at: string | null
   approval_note: string | null
 }
 
 export interface ApprovalRequest {
-  operator_name: string
+  // Phase 13A: prefer operator_id (resolves to display_name + audit FK).
+  // operator_name kept for backward compat with CLI/script callers.
+  operator_id?: string | null
+  operator_name?: string | null
   note?: string | null
 }
 
@@ -266,6 +283,13 @@ export const api = {
       `/api/remediation/recommendations/${id}/reject`,
       body,
     ),
+
+  // Phase 13A operators
+  listOperators: (): Promise<Operator[]> =>
+    request<Operator[]>('/api/operators'),
+
+  createOperator: (body: OperatorCreate): Promise<Operator> =>
+    postJson<Operator>('/api/operators', body),
 }
 
 // ----- small utils for the UI -----

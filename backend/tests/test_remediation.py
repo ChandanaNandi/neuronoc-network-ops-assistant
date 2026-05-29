@@ -10,7 +10,7 @@ import ast
 import json
 from contextlib import contextmanager
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -338,16 +338,17 @@ def test_api_approve_400_for_non_remediation_recommendation(
     assert "remediation_plan" in response.json()["detail"]
 
 
-def test_api_approve_requires_operator_name(
+def test_api_approve_requires_some_identity(
     client: TestClient, db_session: Session
 ) -> None:
+    """Phase 13A: at least one of operator_name / operator_id is required."""
     incident = _seed(db_session, "bgp_neighbor_down")
     client.post(f"/api/remediation/incidents/{incident.id}/plan")
     rec_id = client.get(
         f"/api/remediation/incidents/{incident.id}/plans"
     ).json()[0]["id"]
 
-    # missing operator_name -> 422
+    # both missing -> 422
     assert (
         client.post(
             f"/api/remediation/recommendations/{rec_id}/approve",
@@ -363,6 +364,133 @@ def test_api_approve_requires_operator_name(
         ).status_code
         == 422
     )
+
+
+# ---------- Phase 13A: approval with operator_id ----------
+
+
+def test_api_approve_with_operator_id_persists_display_name_and_fk(
+    client: TestClient, db_session: Session
+) -> None:
+    incident = _seed(db_session, "bgp_neighbor_down")
+    client.post(f"/api/remediation/incidents/{incident.id}/plan")
+    rec_id = client.get(
+        f"/api/remediation/incidents/{incident.id}/plans"
+    ).json()[0]["id"]
+
+    op_resp = client.post(
+        "/api/operators",
+        json={"display_name": "approver-13a", "role": "admin"},
+    )
+    assert op_resp.status_code == 201
+    op_id = op_resp.json()["id"]
+
+    response = client.post(
+        f"/api/remediation/recommendations/{rec_id}/approve",
+        json={"operator_id": op_id, "note": "via Phase 13A id-based identity"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["approval_status"] == "approved"
+    assert body["approved_by"] == "approver-13a"  # resolved from operator row
+    assert body["approved_by_operator_id"] == op_id  # FK persisted for audit
+    assert body["approval_note"] == "via Phase 13A id-based identity"
+
+
+def test_api_approve_legacy_operator_name_still_works(
+    client: TestClient, db_session: Session
+) -> None:
+    """Backward-compat check: scripts / CLIs that send only `operator_name`
+    must keep working after Phase 13A."""
+    incident = _seed(db_session, "bgp_neighbor_down")
+    client.post(f"/api/remediation/incidents/{incident.id}/plan")
+    rec_id = client.get(
+        f"/api/remediation/incidents/{incident.id}/plans"
+    ).json()[0]["id"]
+
+    response = client.post(
+        f"/api/remediation/recommendations/{rec_id}/approve",
+        json={"operator_name": "legacy-cli", "note": "from a script"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["approved_by"] == "legacy-cli"
+    assert body["approved_by_operator_id"] is None  # no FK when no id supplied
+
+
+def test_api_approve_422_when_both_operator_id_and_name_supplied(
+    client: TestClient, db_session: Session
+) -> None:
+    """Phase 13A XOR enforcement: the approval payload accepts exactly one of
+    operator_id / operator_name. Sending both must be rejected at the schema
+    layer (422) and must not mutate the recommendation row."""
+    incident = _seed(db_session, "bgp_neighbor_down")
+    client.post(f"/api/remediation/incidents/{incident.id}/plan")
+    rec_id = client.get(
+        f"/api/remediation/incidents/{incident.id}/plans"
+    ).json()[0]["id"]
+
+    op_resp = client.post(
+        "/api/operators",
+        json={"display_name": "xor-test", "role": "operator"},
+    )
+    assert op_resp.status_code == 201
+    op_id = op_resp.json()["id"]
+
+    response = client.post(
+        f"/api/remediation/recommendations/{rec_id}/approve",
+        json={
+            "operator_id": op_id,
+            "operator_name": "shouldnt-be-here",
+            "note": "both supplied",
+        },
+    )
+    assert response.status_code == 422
+
+    # Confirm no mutation: re-read the row from the DB and verify the
+    # approval columns are still in their initial pending state.
+    db_session.expire_all()
+    rec = db_session.get(Recommendation, UUID(rec_id))
+    assert rec is not None
+    assert rec.approval_status == "pending"
+    assert rec.approved_by is None
+    assert rec.approved_by_operator_id is None
+    assert rec.approved_at is None
+
+
+def test_planner_helper_rejects_both_identity_fields(
+    db_session: Session,
+) -> None:
+    """Mirror of the schema-level XOR check at the helper layer, for direct
+    callers that don't go through the FastAPI/Pydantic request layer."""
+    from app.db.models import ApprovalStatus
+    from app.remediation.planner import set_recommendation_approval
+
+    with pytest.raises(ValueError, match="exactly one"):
+        set_recommendation_approval(
+            db_session,
+            recommendation_id=uuid4(),  # never reached - guard runs first
+            status=ApprovalStatus.approved,
+            operator_id=uuid4(),
+            operator_name="alice",
+        )
+
+
+def test_api_approve_404_for_unknown_operator_id(
+    client: TestClient, db_session: Session
+) -> None:
+    incident = _seed(db_session, "bgp_neighbor_down")
+    client.post(f"/api/remediation/incidents/{incident.id}/plan")
+    rec_id = client.get(
+        f"/api/remediation/incidents/{incident.id}/plans"
+    ).json()[0]["id"]
+
+    response = client.post(
+        f"/api/remediation/recommendations/{rec_id}/approve",
+        json={"operator_id": str(uuid4())},
+    )
+    assert response.status_code == 404
+    assert "operator" in response.json()["detail"]
 
 
 # ---------- CLI ----------

@@ -122,9 +122,8 @@ test('Approve a plan via the inline form shows approved badge + operator + note'
     timeout: 20_000,
   })
 
-  // Phase 10B: inline form replaces window.prompt. No dialog handler needed.
-  // Open the newest plan card (list is newest-first), click Approve, fill
-  // operator name + note, click Confirm approve.
+  // Phase 13A: inline form has an operator dropdown populated from
+  // /api/operators. global-setup.ts seeds `local-operator` for this test.
   const newest = page.locator('.plan-card').first()
   await newest.locator('summary').click()
   await newest.getByRole('button', { name: 'Approve' }).click()
@@ -133,11 +132,17 @@ test('Approve a plan via the inline form shows approved badge + operator + note'
   const form = newest.locator('.approval-form')
   await expect(form).toBeVisible()
 
-  // Submit should be disabled while operator field is empty.
+  // Submit should be disabled until an operator is picked or a name typed.
   const confirmBtn = form.getByRole('button', { name: /^Confirm approve$/i })
   await expect(confirmBtn).toBeDisabled()
 
-  await form.getByLabel('operator name').fill('e2e-operator')
+  // Select `local-operator` from the dropdown (seeded by global-setup with
+  // role=admin, so the rendered option text is "local-operator (admin)").
+  // `exact: true` is required because the other input is aria-labelled
+  // "operator name" - a partial match would resolve to both.
+  await form
+    .getByLabel('operator', { exact: true })
+    .selectOption({ label: 'local-operator (admin)' })
   await form.getByLabel('approval note').fill('approved during smoke run')
 
   await expect(confirmBtn).toBeEnabled()
@@ -149,8 +154,9 @@ test('Approve a plan via the inline form shows approved badge + operator + note'
   await expect(newest.locator('.badge--approval-approved')).toBeVisible({
     timeout: 10_000,
   })
+  // Phase 13A: approved_by is resolved from the Operator's display_name.
   await expect(newest.locator('.plan-card__approval')).toContainText(
-    'e2e-operator',
+    'local-operator',
   )
   await expect(newest.locator('.plan-card__approval')).toContainText(
     'approved during smoke run',

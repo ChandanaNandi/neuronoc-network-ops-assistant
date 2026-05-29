@@ -53,6 +53,8 @@ Endpoints:
 - `POST /api/remediation/recommendations/{id}/approve` — Phase 10A: record approval intent on a remediation plan. Body `{operator_name, note?}`. 404 if missing, 400 if recommendation_type ≠ `remediation_plan`. **Records intent only — no execution.**
 - `POST /api/remediation/recommendations/{id}/reject` — same shape, marks rejected.
 - `POST /api/lab/collect/bgp` — Phase 8C: one-shot BGP collection from the Compose FRR lab (writes one tagged `Incident` + per-peer events; requires the Phase 8B lab to be running)
+- `GET /api/operators` — Phase 13A: list operators (minimal dev/local identity rows)
+- `POST /api/operators` — create an operator (409 on duplicate `display_name`)
 
 Interactive docs at `/docs` once running.
 
@@ -241,6 +243,34 @@ psql "postgresql://neuronoc:neuronoc_dev_password@localhost:5433/neuronoc" \
 ```
 
 In the operator console, new lab incidents appear after the next `Refresh` click or after the next 15 s status-grid poll — no UI change is needed for this feature.
+
+## Operators (Phase 13A)
+
+Minimal local identity rows so the approval workflow can attribute decisions to a known row instead of an arbitrary string. **NOT production auth** — no passwords, tokens, sessions, RBAC enforcement, or external IdP integration. The `role` column (`operator` / `admin`) is advisory and not checked anywhere yet.
+
+Seed an operator (idempotent by `display_name`):
+
+```bash
+uv run python -m app.operators.seed --name local-operator --role admin
+uv run python -m app.operators.seed --name alice --role operator
+```
+
+Or via the API:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/operators \
+  -H 'Content-Type: application/json' \
+  -d '{"display_name":"alice","role":"operator"}'
+
+curl -s http://127.0.0.1:8000/api/operators | jq .
+```
+
+The approval endpoints (`POST /api/remediation/recommendations/{id}/{approve,reject}`) accept **either**:
+
+- `{"operator_id": "<uuid>", "note": "..."}` — resolves the operator row; `approved_by` is set to `display_name` and `approved_by_operator_id` records the FK for audit trail integrity.
+- `{"operator_name": "alice", "note": "..."}` — legacy Phase 10A shape; persisted verbatim; FK stays NULL.
+
+Exactly one of `operator_id` / `operator_name` is required (422 if neither). Existing CLI/script callers that send only `operator_name` continue to work unchanged.
 
 ## Test
 

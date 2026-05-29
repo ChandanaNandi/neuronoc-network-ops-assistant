@@ -2,7 +2,17 @@
 
 NeuroNOC is an open-source multi-agent AI NetOps platform for network anomaly detection, root-cause analysis, validation, and remediation planning.
 
-## Phase 10A scope *(current)*
+## Phase 13A scope *(current)*
+
+**Minimal local operator identity.** Adds an `operators` table (id, display_name unique, role default `operator`, created_at — **no passwords, no tokens, no sessions**) so approval actions can be attributed to a known operator row rather than a free-form string. The approval endpoint now accepts either `operator_id` (resolves to an Operator row, sets `approved_by_operator_id` FK for audit) or the legacy `operator_name` string (still works for CLI / script callers).
+
+- New migration `33112e9b5b1c` adds the `operators` table + `recommendations.approved_by_operator_id` nullable FK (ON DELETE SET NULL so deleting an operator preserves historical approvals).
+- API: `GET /api/operators` (list), `POST /api/operators` (create; 409 on duplicate name).
+- Idempotent seed CLI: `uv run python -m app.operators.seed --name local-operator --role admin`.
+- **Not production auth.** No password storage, no JWT, no OAuth, no SSO, no session, no RBAC enforcement anywhere. The `role` column is advisory; nothing checks it yet.
+- UI: approval form gains an operator dropdown populated from `/api/operators`. If the operator list is empty or fails to load, the form falls back to the existing free-form name input.
+
+## Phase 10A scope
 
 **Remediation approval workflow stub.** Persists a `pending` / `approved` / `rejected` state on every remediation plan plus operator name + timestamp + free-text note. **Approving still does not execute anything** — there is no execution path in the code. This is recorded intent only, intended to make the human-in-the-loop a real database row instead of just a `requires_approval=True` flag.
 

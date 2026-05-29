@@ -38,6 +38,11 @@ class ApprovalStatus(str, enum.Enum):
     rejected = "rejected"
 
 
+class OperatorRole(str, enum.Enum):
+    operator = "operator"
+    admin = "admin"
+
+
 class Device(Base):
     __tablename__ = "devices"
 
@@ -199,6 +204,14 @@ class Recommendation(Base):
         index=True,
     )
     approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Phase 13A: nullable FK to operators so we can audit which Operator row
+    # approved a plan even if the display name later changes. ON DELETE SET
+    # NULL so deleting an operator preserves the historical approval row.
+    approved_by_operator_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("operators.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     approved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -272,3 +285,33 @@ class AgentStep(Base):
     )
 
     run: Mapped["AgentRun"] = relationship(back_populates="steps")
+
+
+class Operator(Base):
+    """Phase 13A minimal local identity row.
+
+    NOT a production auth subject. No password, no token, no session. The
+    `display_name` is a human-readable label used in approval audit trails.
+    Roles are advisory only - no RBAC enforcement is wired anywhere yet.
+    """
+
+    __tablename__ = "operators"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    display_name: Mapped[str] = mapped_column(
+        String(128), unique=True, nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=OperatorRole.operator.value,
+        server_default=text("'operator'"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

@@ -76,7 +76,18 @@ Phases are sequential. Each phase is reviewed and approved before the next begin
 - One `Incident` per invocation, tagged `[lab-collector]` in `summary`; events: `lab_bgp_peer_established`, `lab_bgp_peer_not_established`, `lab_bgp_prefix_snapshot`, `lab_bgp_collection_error`.
 - HTTP: `POST /api/lab/collect/bgp`. CLI: `python -m app.lab.collector --collect`.
 
-### Phase 11A — Bounded dev-only watch loop *(current)*
+### Phase 13A — Minimal local operator identity *(current)*
+
+- Migration `33112e9b5b1c` adds an `operators` table (id, display_name unique + indexed, role default `operator`, created_at). No passwords, no tokens, no sessions.
+- Same migration adds nullable `recommendations.approved_by_operator_id` FK (ON DELETE SET NULL) so historical approvals survive operator deletion.
+- `Operator` model + `OperatorRole` enum; `OperatorRead` / `OperatorCreate` schemas.
+- HTTP: `GET /api/operators`, `POST /api/operators` (409 on duplicate `display_name`).
+- CLI: `python -m app.operators.seed --name X --role Y` is idempotent by display_name and updates the role if changed.
+- Approval payload (`ApprovalRequest`) now accepts **either** `operator_id` (resolves to display_name + FK) **or** legacy `operator_name` (string verbatim, no FK). Exactly one required; 422 if neither, 404 if `operator_id` is unknown.
+- UI: approval form gains an operator dropdown (sourced from `/api/operators`); if the list is empty or fails to load, the form falls back cleanly to the existing free-form name input. Selecting an operator disables the name input; typing a name is the alternative path.
+- **Not production auth.** No password storage, no JWT, no OAuth, no SSO, no RBAC enforcement. `role` is advisory only. Existing CLI/script callers that pass only `operator_name` continue to work unchanged.
+
+## Phase 11A — Bounded dev-only watch loop ✓
 
 - `app/lab/collector.py` grows a `--watch --iterations N [--interval-seconds S]` mode that calls `collect_lab_bgp_snapshot` N times with N-1 sleeps in between, then exits. Hard caps `1 ≤ iterations ≤ 100`, `1 ≤ interval-seconds ≤ 3600` enforced by `parser.error` so the bounds can never silently overflow.
 - Output is newline-delimited JSON, one summary per iteration. Per-router scrape failures already surface in the summary's `errors` field; an unexpected exception is caught, emitted as a `{"iteration": N, "error": "..."}` row, and the loop continues.

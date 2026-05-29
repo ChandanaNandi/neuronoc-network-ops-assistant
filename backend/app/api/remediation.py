@@ -8,6 +8,7 @@ from app.anomaly.engine import IncidentNotFoundError
 from app.db.models import ApprovalStatus, Incident, Recommendation
 from app.db.session import get_db
 from app.remediation.planner import (
+    OperatorNotFoundError,
     RecommendationNotFoundError,
     WrongRecommendationTypeError,
     build_remediation_plan,
@@ -51,6 +52,7 @@ def _apply_approval(
             recommendation_id,
             status_value,
             operator_name=payload.operator_name,
+            operator_id=payload.operator_id,
             note=payload.note,
         )
     except RecommendationNotFoundError as exc:
@@ -60,6 +62,10 @@ def _apply_approval(
     except WrongRecommendationTypeError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except OperatorNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
 
 

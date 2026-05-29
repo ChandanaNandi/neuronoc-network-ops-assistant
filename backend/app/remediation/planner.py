@@ -20,7 +20,13 @@ from sqlalchemy.orm import Session
 
 from app.agents.runner import run_incident_analysis
 from app.anomaly.engine import IncidentNotFoundError
-from app.db.models import AgentRun, ApprovalStatus, Incident, Recommendation
+from app.db.models import (
+    AgentRun,
+    ApprovalStatus,
+    Incident,
+    Operator,
+    Recommendation,
+)
 from app.db.session import SessionLocal
 from app.llm.ollama import OllamaUnavailableError
 from app.rca.explainer import generate_rca_explanation
@@ -40,6 +46,11 @@ class WrongRecommendationTypeError(Exception):
     `recommendation_type` is not `remediation_plan`. The approval workflow
     is scoped to remediation plans only; other recommendation kinds are
     informational and have no approval state."""
+
+
+class OperatorNotFoundError(Exception):
+    """Raised when approve/reject is given an operator_id that does not
+    match a row in the operators table."""
 
 
 def _latest_completed_report(db: Session, incident_id: UUID) -> dict | None:
@@ -127,23 +138,43 @@ def set_recommendation_approval(
     db: Session,
     recommendation_id: UUID,
     status: ApprovalStatus,
-    operator_name: str,
-    note: str | None,
+    operator_name: str | None = None,
+    operator_id: UUID | None = None,
+    note: str | None = None,
 ) -> Recommendation:
-    """Phase 10A approval-stub helper.
+    """Phase 10A/13A approval-stub helper.
 
     Records intent ONLY. Never executes a command, never connects to a device,
     never imports an execution library (a safety test scans this package for
     such imports).
 
+    Exactly one of `operator_id` or `operator_name` must be supplied.
+    - `operator_id` resolves an Operator row; `approved_by` is set to that
+      operator's display_name and `approved_by_operator_id` is recorded.
+    - `operator_name` (legacy, Phase 10A) is persisted verbatim with no FK.
+
     Idempotent same-state calls are allowed - they update operator/at/note
     so the latest decision is recorded.
 
     Raises:
-        RecommendationNotFoundError: unknown id (caller -> 404).
-        WrongRecommendationTypeError: recommendation_type != "remediation_plan"
-            (caller -> 400).
+        RecommendationNotFoundError: unknown recommendation id (-> 404).
+        WrongRecommendationTypeError: type != "remediation_plan" (-> 400).
+        OperatorNotFoundError: unknown operator id (-> 404).
+        ValueError: not exactly one of operator_id / operator_name provided.
     """
+    has_id = operator_id is not None
+    has_name = operator_name is not None
+    if not has_id and not has_name:
+        raise ValueError(
+            "exactly one of operator_id or operator_name must be provided "
+            "(neither supplied)"
+        )
+    if has_id and has_name:
+        raise ValueError(
+            "exactly one of operator_id or operator_name must be provided "
+            "(both supplied)"
+        )
+
     rec = db.get(Recommendation, recommendation_id)
     if rec is None:
         raise RecommendationNotFoundError(
@@ -156,8 +187,20 @@ def set_recommendation_approval(
             "is approvable"
         )
 
+    if operator_id is not None:
+        operator = db.get(Operator, operator_id)
+        if operator is None:
+            raise OperatorNotFoundError(
+                f"operator {operator_id} not found"
+            )
+        rec.approved_by = operator.display_name
+        rec.approved_by_operator_id = operator.id
+    else:
+        # Legacy free-form name; no FK.
+        rec.approved_by = operator_name
+        rec.approved_by_operator_id = None
+
     rec.approval_status = status.value
-    rec.approved_by = operator_name
     rec.approved_at = datetime.now(timezone.utc)
     rec.approval_note = note
     db.commit()
