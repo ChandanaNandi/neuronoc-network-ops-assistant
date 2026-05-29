@@ -1,7 +1,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import desc, select
+from sqlalchemy import asc, desc, select
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -49,6 +49,58 @@ def get_incident(
     incident_id: UUID, db: Session = Depends(get_db)
 ) -> models.Incident:
     return _get_incident_or_404(incident_id, db)
+
+
+@router.get(
+    "/{incident_id}/events",
+    response_model=list[schemas.IncidentEventRead],
+)
+def list_events_for_incident(
+    incident_id: UUID,
+    limit: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> list[models.IncidentEvent]:
+    """List events for an incident, oldest first (timeline order).
+
+    Returns 404 if the incident does not exist.
+    """
+    _get_incident_or_404(incident_id, db)
+    # Secondary sort by `id` so two rows that share a timestamp still have a
+    # stable order between requests.
+    stmt = (
+        select(models.IncidentEvent)
+        .where(models.IncidentEvent.incident_id == incident_id)
+        .order_by(asc(models.IncidentEvent.created_at), asc(models.IncidentEvent.id))
+        .limit(limit)
+    )
+    return list(db.scalars(stmt).all())
+
+
+@router.get(
+    "/{incident_id}/evidence",
+    response_model=list[schemas.IncidentEvidenceRead],
+)
+def list_evidence_for_incident(
+    incident_id: UUID,
+    limit: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> list[models.IncidentEvidence]:
+    """List evidence for an incident, oldest first (timeline order).
+
+    Returns 404 if the incident does not exist.
+    """
+    _get_incident_or_404(incident_id, db)
+    # Secondary sort by `id` for the same stability reason as events above.
+    stmt = (
+        select(models.IncidentEvidence)
+        .where(models.IncidentEvidence.incident_id == incident_id)
+        .order_by(
+            asc(models.IncidentEvidence.created_at),
+            asc(models.IncidentEvidence.id),
+        )
+        .limit(limit)
+    )
+    return list(db.scalars(stmt).all())
 
 
 @router.post(

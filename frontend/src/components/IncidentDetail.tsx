@@ -7,6 +7,8 @@ import {
   type AgentRun,
   type AnomalyFinding,
   type Incident,
+  type IncidentEvent,
+  type IncidentEvidence,
   type RCAExplanation,
   type Recommendation,
 } from '../api'
@@ -30,6 +32,28 @@ const ACTION_LABELS: Record<ActionKey, string> = {
   plan: 'Generate remediation plan',
 }
 
+type RefHit = { kind: 'event' | 'evidence'; label: string }
+type RefLookup = Map<string, RefHit>
+
+function buildRefLookup(
+  events: IncidentEvent[] | null,
+  evidence: IncidentEvidence[] | null,
+): RefLookup {
+  const m: RefLookup = new Map()
+  for (const e of events ?? []) {
+    m.set(e.id, { kind: 'event', label: `evt:${e.event_type}@${e.source}` })
+  }
+  for (const v of evidence ?? []) {
+    m.set(v.id, { kind: 'evidence', label: `ev:${v.evidence_type}@${v.source}` })
+  }
+  return m
+}
+
+function renderRef(id: string, lookup: RefLookup): string {
+  const hit = lookup.get(id)
+  return hit ? hit.label : `unresolved ${shortId(id)}`
+}
+
 export function IncidentDetail({
   incidentId,
   refreshTrigger,
@@ -38,6 +62,8 @@ export function IncidentDetail({
 }: IncidentDetailProps) {
   const [incident, setIncident] = useState<Incident | null>(null)
   const [findings, setFindings] = useState<AnomalyFinding[] | null>(null)
+  const [events, setEvents] = useState<IncidentEvent[] | null>(null)
+  const [evidence, setEvidence] = useState<IncidentEvidence[] | null>(null)
   const [runs, setRuns] = useState<AgentRun[] | null>(null)
   const [plans, setPlans] = useState<Recommendation[] | null>(null)
   const [rca, setRca] = useState<RCAExplanation | null>(null)
@@ -56,13 +82,17 @@ export function IncidentDetail({
     Promise.all([
       api.getIncident(incidentId),
       api.findingsForIncident(incidentId),
+      api.eventsForIncident(incidentId, 100),
+      api.evidenceForIncident(incidentId, 100),
       api.agentRunsForIncident(incidentId, 20),
       api.remediationPlansForIncident(incidentId, 20),
     ])
-      .then(([inc, fs, rs, ps]) => {
+      .then(([inc, fs, evs, evd, rs, ps]) => {
         if (!alive) return
         setIncident(inc)
         setFindings(fs)
+        setEvents(evs)
+        setEvidence(evd)
         setRuns(rs)
         setPlans(ps)
         setLoading(false)
@@ -139,6 +169,8 @@ export function IncidentDetail({
     )
   }
   if (!incident) return null
+
+  const refLookup = buildRefLookup(events, evidence)
 
   return (
     <div className="incident-detail">
@@ -218,8 +250,8 @@ export function IncidentDetail({
               </div>
               {f.evidence_refs.length > 0 && (
                 <div className="finding-card__refs muted">
-                  evidence refs:{' '}
-                  {f.evidence_refs.map((id) => shortId(id)).join(', ')}
+                  refs:{' '}
+                  {f.evidence_refs.map((id) => renderRef(id, refLookup)).join(', ')}
                 </div>
               )}
             </div>
@@ -228,14 +260,60 @@ export function IncidentDetail({
 
       <section className="detail-section">
         <h3 className="detail-section__title">
-          Events &amp; evidence{' '}
-          <span className="muted">(not yet exposed)</span>
+          Events <span className="muted">({events?.length ?? 0})</span>
         </h3>
-        <div className="muted">
-          The current backend exposes events/evidence only via POST and only
-          embedded in agent runs. A dedicated GET endpoint will land in a
-          follow-up phase (see Phase 9A report).
-        </div>
+        {events && events.length === 0 && (
+          <div className="muted">No events recorded for this incident.</div>
+        )}
+        {events &&
+          events.map((e) => (
+            <div key={e.id} className="event-card">
+              <div className="event-card__head">
+                <code className="event-card__type">{e.event_type}</code>
+                <span className="muted">@{e.source}</span>
+                <span className="muted event-card__when">
+                  {formatDate(e.created_at)}
+                </span>
+                <code className="event-card__id muted">{shortId(e.id)}</code>
+              </div>
+              <div className="event-card__message">{e.message}</div>
+              {e.payload && Object.keys(e.payload).length > 0 && (
+                <details className="event-card__payload">
+                  <summary className="muted">payload</summary>
+                  <pre>{JSON.stringify(e.payload, null, 2)}</pre>
+                </details>
+              )}
+            </div>
+          ))}
+      </section>
+
+      <section className="detail-section">
+        <h3 className="detail-section__title">
+          Evidence <span className="muted">({evidence?.length ?? 0})</span>
+        </h3>
+        {evidence && evidence.length === 0 && (
+          <div className="muted">No evidence attached to this incident.</div>
+        )}
+        {evidence &&
+          evidence.map((v) => (
+            <div key={v.id} className="event-card">
+              <div className="event-card__head">
+                <code className="event-card__type">{v.evidence_type}</code>
+                <span className="muted">@{v.source}</span>
+                <span className="muted event-card__when">
+                  {formatDate(v.created_at)}
+                </span>
+                <code className="event-card__id muted">{shortId(v.id)}</code>
+              </div>
+              <pre className="event-card__content">{v.content}</pre>
+              {v.payload && Object.keys(v.payload).length > 0 && (
+                <details className="event-card__payload">
+                  <summary className="muted">payload</summary>
+                  <pre>{JSON.stringify(v.payload, null, 2)}</pre>
+                </details>
+              )}
+            </div>
+          ))}
       </section>
 
       {rca && (

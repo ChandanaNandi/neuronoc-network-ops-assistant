@@ -1,3 +1,5 @@
+import time
+
 from fastapi.testclient import TestClient
 
 
@@ -103,6 +105,151 @@ def test_add_evidence_to_incident(client: TestClient) -> None:
     body = response.json()
     assert body["evidence_type"] == "command_output"
     assert body["incident_id"] == incident["id"]
+
+
+def test_list_events_returns_them_oldest_first(client: TestClient) -> None:
+    incident = _create_incident(client)
+    inc_id = incident["id"]
+    ev1 = client.post(
+        f"/api/incidents/{inc_id}/events",
+        json={
+            "event_type": "syslog",
+            "source": "edge-1",
+            "message": "first event",
+            "payload": {"step": 1},
+        },
+    ).json()
+    # The endpoint sorts by (created_at, id). Two POSTs in the same microsecond
+    # would tie on created_at and order by UUID instead of insertion - a 10ms
+    # gap is plenty to keep this test about timeline order, not UUID order.
+    time.sleep(0.01)
+    ev2 = client.post(
+        f"/api/incidents/{inc_id}/events",
+        json={
+            "event_type": "syslog",
+            "source": "edge-1",
+            "message": "second event",
+            "payload": {"step": 2},
+        },
+    ).json()
+
+    response = client.get(f"/api/incidents/{inc_id}/events")
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 2
+    # Oldest first: insertion order.
+    assert items[0]["id"] == ev1["id"]
+    assert items[1]["id"] == ev2["id"]
+    # Payload round-trips intact.
+    assert items[0]["payload"] == {"step": 1}
+
+
+def test_list_events_404_for_missing_incident(client: TestClient) -> None:
+    response = client.get(
+        "/api/incidents/00000000-0000-0000-0000-000000000000/events"
+    )
+    assert response.status_code == 404
+
+
+def test_list_events_rejects_out_of_range_limit(client: TestClient) -> None:
+    incident = _create_incident(client)
+    assert (
+        client.get(f"/api/incidents/{incident['id']}/events?limit=0").status_code
+        == 422
+    )
+    assert (
+        client.get(f"/api/incidents/{incident['id']}/events?limit=500").status_code
+        == 422
+    )
+
+
+def test_list_evidence_returns_them_oldest_first(client: TestClient) -> None:
+    incident = _create_incident(client)
+    inc_id = incident["id"]
+    e1 = client.post(
+        f"/api/incidents/{inc_id}/evidence",
+        json={
+            "evidence_type": "command_output",
+            "source": "edge-1",
+            "content": "show ip route ...",
+            "payload": {"step": 1},
+        },
+    ).json()
+    # See sibling event test for why this sleep exists.
+    time.sleep(0.01)
+    e2 = client.post(
+        f"/api/incidents/{inc_id}/evidence",
+        json={
+            "evidence_type": "command_output",
+            "source": "edge-1",
+            "content": "show interface eth0",
+            "payload": {"step": 2},
+        },
+    ).json()
+
+    response = client.get(f"/api/incidents/{inc_id}/evidence")
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 2
+    assert items[0]["id"] == e1["id"]
+    assert items[1]["id"] == e2["id"]
+
+
+def test_list_evidence_404_for_missing_incident(client: TestClient) -> None:
+    response = client.get(
+        "/api/incidents/00000000-0000-0000-0000-000000000000/evidence"
+    )
+    assert response.status_code == 404
+
+
+def test_list_evidence_rejects_out_of_range_limit(client: TestClient) -> None:
+    incident = _create_incident(client)
+    assert (
+        client.get(
+            f"/api/incidents/{incident['id']}/evidence?limit=0"
+        ).status_code
+        == 422
+    )
+    assert (
+        client.get(
+            f"/api/incidents/{incident['id']}/evidence?limit=500"
+        ).status_code
+        == 422
+    )
+
+
+def test_list_events_respects_limit(client: TestClient) -> None:
+    incident = _create_incident(client)
+    inc_id = incident["id"]
+    for i in range(5):
+        client.post(
+            f"/api/incidents/{inc_id}/events",
+            json={
+                "event_type": "syslog",
+                "source": "edge-1",
+                "message": f"event {i}",
+            },
+        )
+    response = client.get(f"/api/incidents/{inc_id}/events?limit=3")
+    assert response.status_code == 200
+    assert len(response.json()) == 3
+
+
+def test_list_evidence_respects_limit(client: TestClient) -> None:
+    incident = _create_incident(client)
+    inc_id = incident["id"]
+    for i in range(5):
+        client.post(
+            f"/api/incidents/{inc_id}/evidence",
+            json={
+                "evidence_type": "command_output",
+                "source": "edge-1",
+                "content": f"evidence {i}",
+            },
+        )
+    response = client.get(f"/api/incidents/{inc_id}/evidence?limit=3")
+    assert response.status_code == 200
+    assert len(response.json()) == 3
 
 
 def test_add_recommendation_to_incident(client: TestClient) -> None:

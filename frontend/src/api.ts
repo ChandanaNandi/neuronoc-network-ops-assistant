@@ -26,6 +26,26 @@ export interface Incident {
   resolved_at: string | null
 }
 
+export interface IncidentEvent {
+  id: string
+  incident_id: string
+  event_type: string
+  source: string
+  message: string
+  payload: Record<string, unknown> | null
+  created_at: string
+}
+
+export interface IncidentEvidence {
+  id: string
+  incident_id: string
+  evidence_type: string
+  source: string
+  content: string
+  payload: Record<string, unknown> | null
+  created_at: string
+}
+
 export interface AnomalyFinding {
   rule_id: string
   rule_name: string
@@ -173,6 +193,14 @@ export const api = {
 
   getIncident: (id: string): Promise<Incident> =>
     request<Incident>(`/api/incidents/${id}`),
+
+  eventsForIncident: (id: string, limit = 50): Promise<IncidentEvent[]> =>
+    request<IncidentEvent[]>(`/api/incidents/${id}/events?limit=${limit}`),
+
+  evidenceForIncident: (id: string, limit = 50): Promise<IncidentEvidence[]> =>
+    request<IncidentEvidence[]>(
+      `/api/incidents/${id}/evidence?limit=${limit}`,
+    ),
 
   listOpenFindings: (limit = 100): Promise<AnomalyFinding[]> =>
     request<AnomalyFinding[]>(`/api/anomalies/open?limit=${limit}`),
