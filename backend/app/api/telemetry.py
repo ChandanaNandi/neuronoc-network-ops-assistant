@@ -13,6 +13,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.telemetry.correlator import (
+    TelemetryCorrelationPreview,
+    build_correlation_preview,
+)
 from app.telemetry.events import TelemetryEvent
 
 router = APIRouter(prefix="/api/telemetry", tags=["telemetry"])
@@ -33,3 +37,30 @@ def validate_telemetry_event(payload: TelemetryEvent) -> TelemetryEvent:
     invoke any LLM.
     """
     return payload
+
+
+@router.post(
+    "/correlate/preview", response_model=TelemetryCorrelationPreview
+)
+def preview_telemetry_correlation(
+    payload: TelemetryEvent,
+) -> TelemetryCorrelationPreview:
+    """Map a `TelemetryEvent` to a preview of how it WOULD land as an
+    `Incident` + `IncidentEvent`, WITHOUT persisting anything.
+
+    Pure deterministic projection of the input through the rule mapping
+    in `app/telemetry/correlator.py`. The response model pins
+    `persisted: Literal[False]` so the type system refuses any future
+    attempt to flip this into a write path.
+
+    `would_create_incident` is True for events matched by a specific rule
+    (BGP / interface / latency / route / ACL) and False for the generic
+    `telemetry_observation` fallback. `would_create_event` is always True
+    - every telemetry event would land as an IncidentEvent row.
+
+    Read-only by construction: the handler does not touch the database
+    session, does not contact a device, does not open a socket, does not
+    invoke any LLM. 422 on schema failure (same Pydantic path as
+    `/validate`).
+    """
+    return build_correlation_preview(payload)

@@ -18,6 +18,10 @@ interfaces behind a separate review.
 """
 
 from app.telemetry.adapters import SNMPAdapter, SyslogAdapter
+from app.telemetry.correlator import (
+    TelemetryCorrelationPreview,
+    build_correlation_preview,
+)
 from app.telemetry.events import (
     CollectorType,
     TelemetryEvent,
@@ -29,7 +33,9 @@ __all__ = [
     "CollectorType",
     "SNMPAdapter",
     "SyslogAdapter",
+    "TelemetryCorrelationPreview",
     "TelemetryEvent",
     "TelemetrySeverity",
+    "build_correlation_preview",
     "normalize_manual_event",
 ]
