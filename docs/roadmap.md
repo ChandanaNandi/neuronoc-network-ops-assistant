@@ -405,7 +405,7 @@ Conventions:
 - Files (5): `infra/lab/scripts/lab.sh` (modified), `infra/lab/scripts/test_lab.sh` (new, executable), `infra/lab/README.md` (modified — fault matrix, canonical-peer map, manual validation recipe, deferred-`iface-errors` rationale), `backend/README.md` (modified — cross-reference in Demo path so `docker stop` no longer appears as the inject step), `docs/roadmap.md` (modified).
 - Same guardrails as every prior phase — lab-only (no host packet tricks, no privileged kernel knobs, no arbitrary container targeting), no new dependency, no schema, no migration, no backend/frontend code change, no remediation execution, no LLM behavior change.
 
-## Phase 21E — Lab route-table snapshots *(current)*
+## Phase 21E — Lab route-table snapshots ✓
 
 - **Backend collector + rule tests + docs only.** Extends the Phase 21A umbrella snapshot with `show ip route json` per router. No frontend, no dependency, no schema migration, no template-priority change, no syslog.
 - New lab-topology-scoped expected loopback table: each router expects the other three routers' loopback `/32`s via BGP (`edge-1→10.0.0.12/32,10.0.0.21/32,10.0.0.31/32`, etc.). This mirrors Phase 21D's canonical-peer map: small, explicit, and tied to the frozen Phase 8B FRR topology.
@@ -419,6 +419,29 @@ Conventions:
 - **Syslog deliberately deferred.** The FRR lab logs to stdout, so `docker logs --tail N` is mechanically possible, but it does not close an ACL-deny/packet-loss/latency rule gap and would add a second collection surface with weak signal. A future firewall or traffic component should introduce those signals instead.
 - Real-lab rule coverage after 21E: covered from lab data: R001 `bgp_neighbor_down_detected`, R003 `interface_error_spike_detected` via collector payload, R007 `route_missing_detected`, R008 `link_down_detected`. Simulator-only / no lab signal: R002 `route_withdrawal_detected`, R004 `packet_loss_detected`, R005 `latency_spike_detected`, R006 `acl_deny_spike_detected`.
 - Same guardrails as every prior lab phase — read-only `show *` commands only, known-router allow-list, forbidden-token command guard, no external device targeting, no remediation execution, no LLM behavior change.
+
+## Phase 22A — Real telemetry persistence model and API *(current)*
+
+- **Backend only — no frontend, no streaming, no daemon, no scheduler, no auto-correlation.** Turns the Phase 18 telemetry preview track from preview-only into a persisted sample store. The existing `/validate` and `/correlate/preview` endpoints stay **byte-for-byte unchanged** in behavior; persistence is a NEW endpoint triple, not a modification.
+- **New table `telemetry_observations`** via Alembic migration `82c1f3c27505` (parent `33112e9b5b1c`):
+  - `id` UUID PK (`gen_random_uuid()` server default)
+  - `source` VARCHAR(256) NOT NULL
+  - `vendor` VARCHAR(64) NULL — populated from `event.labels["vendor"]` at persist time when present
+  - `observation_type` VARCHAR(64) NOT NULL (the `TelemetryEvent.event_type`)
+  - `payload` JSONB NOT NULL — full normalized `TelemetryEvent` dict from `model_dump(mode="json")`
+  - `received_at` TIMESTAMPTZ NOT NULL, `now()` server default, indexed
+  - `created_incident_id` UUID NULL, FK `incidents.id` `ON DELETE SET NULL`, indexed
+- **New SQLAlchemy model** `TelemetryObservation` in `app/db/models.py` mirroring the table.
+- **New schemas** in `app/schemas/telemetry.py` (new file): `TelemetryObservationRead` (`from_attributes=True`) carrying `id`, `source`, `vendor`, `observation_type`, `payload`, `received_at`, `created_incident_id`. Request body for create reuses the existing `TelemetryEvent` schema directly so the validation contract is single-sourced.
+- **New persistence helper** `persist_telemetry_observation(db, event)` in `app/telemetry/persistence.py` — single function, takes a validated `TelemetryEvent`, writes one row, returns the refreshed ORM instance. Vendor lookup is conservative: pulls from `event.labels["vendor"]` only when present; never guessed. Phase 22A pins `created_incident_id=NULL` on every row — no auto-correlation.
+- **Three new endpoints** in `app/api/telemetry.py`:
+  - `POST /api/telemetry/observations` → 201 + `TelemetryObservationRead`. Pydantic validates the body. No auto-incident creation. 422 on schema failure.
+  - `GET /api/telemetry/observations?limit=N` → newest first. Ordering is `received_at DESC, id DESC` — the secondary key gives deterministic ordering when timestamps tie (the savepoint-based test fixture exposed this case because Postgres `now()` is transaction-start time). Limit 1..100; 422 for out-of-range.
+  - `GET /api/telemetry/observations/{id}` → 200 or 404.
+- **14 new focused tests** in `backend/tests/test_telemetry_observations.py`: direct helper writes the row; vendor extracted from labels; missing vendor label → NULL; POST returns 201 + persisted row; POST 422 on invalid event; POST does NOT auto-create Incident (row count pinned); JSONB round-trip; GET list returns newest first (uses direct-DB-insert with explicit ascending timestamps to bypass the shared-`now()` test-fixture limitation); GET limit respected; GET limit out-of-range → 422; GET single 404; GET single returns persisted row; `/validate` remains non-persisting (`telemetry_observations` count unchanged after POST `/validate`); `/correlate/preview` remains non-persisting AND still returns `persisted: false`.
+- AST safety scan (`test_telemetry_package_blocks_network_and_execution_imports`) automatically covers the new `app/telemetry/persistence.py` because it scans `app/telemetry/` recursively — same 13-root forbid list applies.
+- **Out of scope** (explicitly deferred): auto-incident creation from observations, background ingest / scheduler, streaming, real SNMP/syslog collection, auth/RBAC, frontend wiring, telemetry-to-incident automation, any LLM call. The migration's `created_incident_id` FK exists today only so a future phase can populate it without another schema change.
+- Same guardrails as every prior phase — no new dependency, no external network/device contact, no remediation execution.
 
 ## Beyond
 

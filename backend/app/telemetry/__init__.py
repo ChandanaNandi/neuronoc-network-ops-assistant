@@ -28,6 +28,7 @@ from app.telemetry.events import (
     TelemetrySeverity,
 )
 from app.telemetry.normalizer import normalize_manual_event
+from app.telemetry.persistence import persist_telemetry_observation
 
 __all__ = [
     "CollectorType",
@@ -38,4 +39,5 @@ __all__ = [
     "TelemetrySeverity",
     "build_correlation_preview",
     "normalize_manual_event",
+    "persist_telemetry_observation",
 ]

@@ -11,13 +11,21 @@ ingest endpoints land in a later phase under separate review.
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from uuid import UUID
 
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import desc, select
+from sqlalchemy.orm import Session
+
+from app.db.models import TelemetryObservation
+from app.db.session import get_db
+from app.schemas.telemetry import TelemetryObservationRead
 from app.telemetry.correlator import (
     TelemetryCorrelationPreview,
     build_correlation_preview,
 )
 from app.telemetry.events import TelemetryEvent
+from app.telemetry.persistence import persist_telemetry_observation
 
 router = APIRouter(prefix="/api/telemetry", tags=["telemetry"])
 
@@ -64,3 +72,81 @@ def preview_telemetry_correlation(
     `/validate`).
     """
     return build_correlation_preview(payload)
+
+
+# ============================================================
+# Phase 22A - persisted telemetry observations
+# ============================================================
+#
+# Backward-compat note: the `/validate` and `/correlate/preview`
+# endpoints above are intentionally unchanged and STILL do not touch
+# the database. The Phase 22A persistence path is a NEW endpoint
+# triple, not a modification of existing behavior.
+
+
+@router.post(
+    "/observations",
+    response_model=TelemetryObservationRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_telemetry_observation(
+    payload: TelemetryEvent, db: Session = Depends(get_db)
+) -> TelemetryObservation:
+    """Phase 22A: persist a validated `TelemetryEvent` as a row in the
+    `telemetry_observations` table.
+
+    Pydantic validates the body (same `TelemetryEvent` schema the
+    Phase 18A `/validate` endpoint uses). On success returns the
+    persisted row with server-side defaults (id, received_at) populated.
+    `created_incident_id` is always `None` for rows created in Phase 22A
+    — no auto-correlation, no auto-incident creation. 422 on schema
+    failure.
+    """
+    return persist_telemetry_observation(db, payload)
+
+
+@router.get(
+    "/observations", response_model=list[TelemetryObservationRead]
+)
+def list_telemetry_observations(
+    limit: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> list[TelemetryObservation]:
+    """Phase 22A: list persisted telemetry observations, newest first.
+
+    Mirrors the existing `/api/incidents` pagination contract — `limit`
+    1..100, 422 for out-of-range values. No filtering parameters in
+    Phase 22A; filter / search surfaces land in a later phase if needed.
+    """
+    # Secondary `id DESC` key gives deterministic ordering when multiple
+    # rows share an identical `received_at` (Postgres `now()` resolution
+    # can tie under heavy concurrent inserts; the savepoint-based test
+    # fixture also exposes this case because `now()` is transaction-start
+    # time). UUID v4 isn't time-sortable, but the secondary key is
+    # consistent across calls.
+    stmt = (
+        select(TelemetryObservation)
+        .order_by(
+            desc(TelemetryObservation.received_at),
+            desc(TelemetryObservation.id),
+        )
+        .limit(limit)
+    )
+    return list(db.scalars(stmt).all())
+
+
+@router.get(
+    "/observations/{observation_id}",
+    response_model=TelemetryObservationRead,
+)
+def get_telemetry_observation(
+    observation_id: UUID, db: Session = Depends(get_db)
+) -> TelemetryObservation:
+    """Phase 22A: fetch one persisted observation by id; 404 if missing."""
+    obs = db.get(TelemetryObservation, observation_id)
+    if obs is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"telemetry observation {observation_id} not found",
+        )
+    return obs

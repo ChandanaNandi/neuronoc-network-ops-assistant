@@ -315,3 +315,46 @@ class Operator(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class TelemetryObservation(Base):
+    """Phase 22A: persisted raw telemetry sample.
+
+    Wraps a single `TelemetryEvent` payload as a durable row, separate
+    from `Incident` / `IncidentEvent`. Phase 22A is persistence only -
+    no auto-correlation, no auto-incident creation. The
+    `created_incident_id` FK exists so a future phase can link the
+    observation to the incident it produced (nullable + ON DELETE SET
+    NULL so deleting the incident doesn't cascade-destroy the original
+    observation).
+    """
+
+    __tablename__ = "telemetry_observations"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    source: Mapped[str] = mapped_column(String(256), nullable=False)
+    # Free-form vendor hint (e.g. "cisco", "arista", "frr"). Pulled from
+    # `event.labels["vendor"]` at persist time if present; nullable so an
+    # observation without a known vendor stays representable.
+    vendor: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    observation_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Full normalized `TelemetryEvent` dict (model_dump(mode="json"))
+    # serialized as JSONB. Operator-typed events round-trip cleanly.
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+    )
+    created_incident_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("incidents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
