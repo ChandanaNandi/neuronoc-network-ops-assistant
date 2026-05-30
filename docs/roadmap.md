@@ -370,7 +370,7 @@ Conventions:
 - New "Demo path" section in `backend/README.md` walks the recruiter-demo flow: bring up the FRR lab → inject BGP/interface fault (`docker stop` or `vtysh ... shutdown` an interface) → click `Collect lab snapshot` → inspect the incident → run agent analysis → generate RCA → search runbook → generate remediation plan → approval still required. Explicitly lab-only; explicitly no execution.
 - Same guardrails as every prior phase — no new dependency, no schema migration, no external device contact (fake `_snapshot_runner` intercepts every `docker exec`), no remediation execution, no telemetry UI work, no Netmiko / pyATS / NAPALM / Paramiko, no frontend code change.
 
-## Phase 21C — Map lab snapshot events into anomaly findings *(current)*
+## Phase 21C — Map lab snapshot events into anomaly findings ✓
 
 - **Backend rules + tests + docs only.** Closes the Phase 21B boundary: lab snapshot events now feed the existing Phase 4 anomaly rules, so a real lab fault produces specific findings that route Phase 7 to a specific remediation template instead of `generic_investigation`. No new collector behavior, no schema, no migration, no new dependency, no frontend change.
 - **Three event-to-finding mappings** (all reuse existing finding categories so downstream Phase 5 themes + Phase 7 templates pick up automatically):
@@ -387,6 +387,23 @@ Conventions:
 - Six new focused anomaly tests (21 total in `test_anomaly.py`): the three positive mappings (BGP not-established → BGP finding; lab interface with `has_errors=True` → interface error finding; lab interface with `down=True` → link-down finding), the negative pin (healthy lab interface → no finding), the simulator-summary regression guard (asserts `"transitioned to Idle"` is present AND `"is not Established"` is NOT — pinning the simulator phrasing byte-for-byte), and a companion lab-phrasing test (asserts the lab path uses `"is not Established"` AND that the simulator phrasing has not leaked in — pinning both directions of the per-event-type branch).
 - README "Demo path" section updated: lab events now feed anomaly findings; remaining gap (route-table-sample + syslog-sample collectors not built yet) honestly documented.
 - Same guardrails as every prior phase — no new dependency, no schema migration, no external device contact (rule tests use direct event-payload fixtures, no docker), no remediation execution, no LLM behavior change, no Netmiko / pyATS / NAPALM / Paramiko, no frontend code change.
+
+## Phase 21D — Lab fault-injection helper (demo ergonomics) *(current)*
+
+- **Shell + docs + smoke test only — NO backend, frontend, dependency, or schema changes.** Makes the recruiter-demo flow one command per scenario instead of remembering raw `docker stop` / `vtysh ... shutdown` recipes.
+- Top-level verbs (per user direction; **not** `inject heal ...`):
+  - `lab.sh inject bgp-down <router>` — `vtysh "router bgp <AS>" -c "neighbor <CANONICAL_PEER> shutdown"` inside the router.
+  - `lab.sh heal bgp-down <router>` — symmetric `no shutdown`.
+  - `lab.sh inject iface-down <router> <iface>` — `ip link set <iface> down` inside the container (works because the FRR images carry `NET_ADMIN`).
+  - `lab.sh heal iface-down <router> <iface>` — `ip link set <iface> up`.
+- **Canonical-only `bgp-down`** (no optional peer arg per user direction — the point is demo repeatability, not a mini fault-injection framework). Hardcoded peer map per router matches the Phase 8B topology and is chosen to produce a partial fault (the router's other peers stay up so the collector still scrapes successfully): `edge-1→172.30.1.2`, `edge-2→172.30.2.2`, `core-1→172.30.1.1`, `branch-1→172.30.3.2`. Operators who want a different peer drop to `lab.sh cli <router>` and use vtysh directly.
+- **Idempotent by construction**: FRR accepts `neighbor X shutdown` / `no neighbor X shutdown` as no-ops when already in the requested state; `ip link set ... down` / `up` on an already-down / already-up interface is a no-op. Re-running `inject` or `heal` repeatedly never leaves the lab worse.
+- **No new `status` command**; existing `lab.sh bgp all` is the post-inject verification step. Documented inline in `usage()` and the new README section.
+- **`iface-errors` deferred**, rationale documented in `infra/lab/README.md`: `tc netem corrupt N%` would either tear BGP down (conflating with `bgp-down`) or require sustained traffic + stable error generation that's fragile for a demo. Note that `iface-down` already triggers BOTH Phase 21C R008 `link_down_detected` AND knocks down any BGP session on that link — richer single-command demo than `bgp-down` alone.
+- **Bash 3.2 portable**: macOS ships bash 3.2 which doesn't support `declare -A`, so the canonical-peer / local-AS lookups are case-statement functions (`_canonical_bgp_peer`, `_local_as`) rather than associative arrays. Verified by the smoke test.
+- **33-assertion smoke** in `infra/lab/scripts/test_lab.sh`. Runs in <1 s with **no docker daemon required** — half are argument-validation (unknown fault type, missing args, unknown router, usage text mentions the new subcommands, etc.) and half are fake-docker capture assertions: a stub `docker` script first on PATH captures every `docker exec` argv and the test asserts the exact vtysh / `ip link` command-string lab.sh emits per fault. Critically, this catches FRR-syntax drift — the suite has explicit pins that inject emits `neighbor X shutdown` and heal emits `no neighbor X shutdown` (NOT the syntactically-invalid `neighbor X no shutdown`). Actual fault mechanics against a live lab are documented as a manual validation recipe in `infra/lab/README.md` because the lab takes ~25-30 s per `up`/heal-converge cycle, too slow for CI.
+- Files (5): `infra/lab/scripts/lab.sh` (modified), `infra/lab/scripts/test_lab.sh` (new, executable), `infra/lab/README.md` (modified — fault matrix, canonical-peer map, manual validation recipe, deferred-`iface-errors` rationale), `backend/README.md` (modified — cross-reference in Demo path so `docker stop` no longer appears as the inject step), `docs/roadmap.md` (modified).
+- Same guardrails as every prior phase — lab-only (no host packet tricks, no privileged kernel knobs, no arbitrary container targeting), no new dependency, no schema, no migration, no backend/frontend code change, no remediation execution, no LLM behavior change.
 
 ## Beyond
 

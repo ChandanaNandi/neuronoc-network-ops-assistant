@@ -67,21 +67,27 @@ Interactive docs at `/docs` once running.
 
 End-to-end smoke walk-through that proves the Phase 21A collector feeds the existing incident-detail / RCA / runbook / remediation flow against **real** read-only observations from the FRR lab. Lab-only by design — nothing here contacts an external device, and **no remediation is ever executed**.
 
-1. **Bring up the Phase 8B FRR Compose lab.**
+1. **Bring up the Phase 8B FRR Compose lab.** (Run from the repo root; the helper script lives at `infra/lab/scripts/lab.sh`.)
    ```bash
-   cd infra/lab
-   ./lab.sh up      # docker compose up -d the four FRR routers
-   ./lab.sh bgp     # quick check: BGP peers should be Established
+   ./infra/lab/scripts/lab.sh up           # docker compose up -d the four FRR routers
+   ./infra/lab/scripts/lab.sh bgp all      # quick check: every BGP peer should be Established
    ```
 
-2. **Inject a fault.** Pick one — both flow through the existing chain.
+2. **Inject a fault.** Phase 21D's `lab.sh inject` / `heal` helpers make this one command per scenario (lab-only, idempotent — see `infra/lab/README.md` for the full fault matrix and canonical-peer map):
    ```bash
-   # Option A: take down a router; its peers flip to Idle/Active.
-   docker stop neuronoc-lab-core-1
-   # Option B: stay running but flap an interface on a peer.
-   docker exec neuronoc-lab-edge-1 vtysh -c "conf t" -c "interface eth1" -c "shutdown"
-   # Either way, undo with: docker start <ct> / "no shutdown"
+   # Reliable BGP-down on edge-1's canonical peer (core-1 side).
+   ./infra/lab/scripts/lab.sh inject bgp-down edge-1
+
+   # Or take an interface down (also flaps any BGP session on that link;
+   # richer single-command demo - feeds both link_down_detected AND
+   # bgp_neighbor_down_detected findings).
+   ./infra/lab/scripts/lab.sh inject iface-down edge-1 eth0
+
+   # Heal (symmetric); BGP convergence takes ~30s after a heal.
+   ./infra/lab/scripts/lab.sh heal bgp-down edge-1
+   ./infra/lab/scripts/lab.sh heal iface-down edge-1 eth0
    ```
+   You can still drop to raw `docker stop` / `vtysh -c "..."` if you want a different shape, but the helper is what the demo flow assumes.
 
 3. **Click `Collect lab snapshot` in the operator console header.** The Phase 21A `POST /api/lab/collect/snapshot` runs `docker exec` against each lab container (read-only `show *` commands only — `_assert_known_router` + `_assert_show_command` gate every call) and writes ONE Incident (`incident_type=lab_full_snapshot`, tagged `[lab-collector]`) carrying BGP events, per-interface status events, and a per-router `running_config_snapshot` evidence row.
 

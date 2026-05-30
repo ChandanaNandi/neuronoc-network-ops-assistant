@@ -113,6 +113,76 @@ This removes the lab containers and the three `neuronoc_lab_*` networks. No volu
 | `lab.sh logs [router]` | tail logs (one router or all) |
 | `lab.sh cli <router>` | interactive `vtysh` |
 | `lab.sh bgp <router>` | `show ip bgp summary` on one router or `all` |
+| `lab.sh inject bgp-down <router>` | **Phase 21D**: shut canonical BGP neighbor on `<router>` |
+| `lab.sh heal bgp-down <router>` | **Phase 21D**: un-shut the same neighbor |
+| `lab.sh inject iface-down <router> <iface>` | **Phase 21D**: `ip link set <iface> down` inside the container |
+| `lab.sh heal iface-down <router> <iface>` | **Phase 21D**: `ip link set <iface> up` |
+
+## Fault injection (demo helper, Phase 21D)
+
+The recruiter-demo path (see `backend/README.md` → "Demo path") needs a reliable way to break the lab into a state the Phase 21A `Collect lab snapshot` button can observe. `lab.sh inject` / `lab.sh heal` are that helper — they only target the existing `neuronoc-lab-*` containers via `docker exec`, never touch the host network stack, and are naturally idempotent (re-running an inject or a heal is a safe no-op).
+
+### Fault matrix
+
+| Fault | Mechanism | Heal | Effect on collector |
+|---|---|---|---|
+| `bgp-down <router>` | `vtysh -c "configure terminal" -c "router bgp <AS>" -c "neighbor <CANONICAL_PEER> shutdown"` inside the router | symmetric `no shutdown` | Phase 21A collector sees `state != Established` for one peer → emits `lab_bgp_peer_not_established` → Phase 21C R001 fires `bgp_neighbor_down_detected` |
+| `iface-down <router> <iface>` | `ip link set <iface> down` inside the container (works because the FRR images carry `NET_ADMIN`) | `ip link set <iface> up` | Phase 21A collector reads `oper_status=down` on the interface → emits `lab_interface_status` with `payload.down=True` → Phase 21C R008 fires `link_down_detected`. Any BGP session traversing that link will also flap. |
+
+### Canonical BGP peer per router
+
+`inject bgp-down <router>` always targets the same peer per router so the demo is reproducible. Mapped to a peer that produces a partial-fault state (the other peers on the router stay up so the collector still scrapes the node successfully):
+
+| Router | Canonical neighbor | The other end |
+|---|---|---|
+| `edge-1` | `172.30.1.2` | core-1 |
+| `edge-2` | `172.30.2.2` | core-1 |
+| `core-1` | `172.30.1.1` | edge-1 |
+| `branch-1` | `172.30.3.2` | core-1 |
+
+If you need a different peer, drop into `lab.sh cli <router>` and run vtysh manually — the helper is intentionally narrow.
+
+### Manual validation recipe
+
+`lab.sh` injects produce instant state changes (no convergence wait), but the lab's BGP hold timers need ~30 s to fully reconverge after a `heal`. Run from project root:
+
+```bash
+./infra/lab/scripts/lab.sh up
+./infra/lab/scripts/lab.sh bgp all                # baseline: every session Established
+
+./infra/lab/scripts/lab.sh inject bgp-down edge-1
+./infra/lab/scripts/lab.sh bgp all                # edge-1 <-> core-1 now Idle/Active
+
+# Optional: hit "Collect lab snapshot" in the operator console; you should
+# see a lab_bgp_peer_not_established event + bgp_neighbor_down_detected
+# finding + plan_type=bgp_neighbor_recovery.
+
+./infra/lab/scripts/lab.sh heal bgp-down edge-1
+sleep 35                                            # let BGP hold-timer reconverge
+./infra/lab/scripts/lab.sh bgp all                # back to Established
+```
+
+The same pattern works for `iface-down` — pre-check available interfaces with `lab.sh cli <router>` then `show interface brief` if you're not sure which name docker assigned.
+
+### Why `iface-errors` is deferred
+
+A `tc qdisc add ... netem corrupt N%` approach would work in principle (the FRR images have `NET_ADMIN`), but in practice for this lab:
+
+- BGP keepalives are tiny (~80 bytes) so even modest corrupt percentages tear the session down — which conflates with `bgp-down`, hiding the "interface errors" signal you'd want to demo.
+- The `tc` toolchain isn't always present in the FRR base image; adding a host-side wrapper would couple the helper to package versions.
+- The Phase 21C anomaly engine already exercises the `interface_error_spike_detected` path via the lab collector's `has_errors` payload flag, but generating that flag reliably from a synthetic fault requires sustained traffic plus stable error generation — fragile for a demo.
+
+`iface-down` already produces BOTH a Phase 21C `link_down_detected` finding AND knocks down any BGP session on that link, so it's a richer single-command demo than `bgp-down` alone — that's the lever to reach for if you want a "mixed-fault" story in one click.
+
+### Argument validation smoke
+
+`infra/lab/scripts/test_lab.sh` runs in <1 s with no docker dependency. Asserts the helper rejects bad input loudly (unknown router, unknown fault type, missing args) before shelling out to a real container. Re-run after touching `lab.sh`:
+
+```bash
+./infra/lab/scripts/test_lab.sh
+```
+
+33 assertions; exit 0 on success. Half are argument-validation (unknown router / fault type / missing args); half are fake-docker capture assertions that put a stub `docker` script first on `PATH` and pin the exact vtysh / `ip link` command string lab.sh emits per fault, including a load-bearing assertion that `heal bgp-down` emits the FRR-correct `no neighbor X shutdown` (not the syntactically-invalid `neighbor X no shutdown`).
 
 ## RFC 8212 / `no bgp ebgp-requires-policy`
 
