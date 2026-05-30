@@ -455,21 +455,89 @@ export function IncidentDetail({
                   {run.status}
                 </span>{' '}
                 <code>{shortId(run.id)}</code>{' '}
-                <span className="muted">{formatDate(run.created_at)}</span>
+                <span className="muted">{run.workflow_name}</span>{' '}
+                <span className="muted">started {formatDate(run.created_at)}</span>
+                {run.completed_at && (
+                  <span className="muted">
+                    {' '}· completed {formatDate(run.completed_at)}
+                  </span>
+                )}
                 <span className="muted"> · {run.steps.length} steps</span>
               </summary>
-              <ol className="run-card__steps">
-                {run.steps.map((s) => (
-                  <li key={s.id}>
-                    <code>{s.step_name}</code>{' '}
-                    <span className="muted">{s.status}</span>
-                  </li>
-                ))}
+              <ol className="run-card__steps" aria-label="agent run steps">
+                {run.steps.map((s) => {
+                  // {} is truthy, so a step with input_payload={} would
+                  // otherwise skip the empty fallback. Treat "no keys" the
+                  // same as null for inspector purposes.
+                  const hasInput = !!(
+                    s.input_payload &&
+                    Object.keys(s.input_payload).length > 0
+                  )
+                  const hasOutput = !!(
+                    s.output_payload &&
+                    Object.keys(s.output_payload).length > 0
+                  )
+                  const hasError = !!s.error
+                  const isEmpty = !hasInput && !hasOutput && !hasError
+                  return (
+                    <li key={s.id} className="run-card__step">
+                      <details>
+                        <summary className="run-card__step-head">
+                          <span
+                            className={`badge badge--run-${s.status}`}
+                          >
+                            {s.status}
+                          </span>{' '}
+                          <code className="run-card__step-name">
+                            {s.step_name}
+                          </code>{' '}
+                          <span className="muted run-card__step-when">
+                            started {formatDate(s.created_at)}
+                            {s.completed_at &&
+                              ` · completed ${formatDate(s.completed_at)}`}
+                          </span>
+                        </summary>
+                        <div className="run-card__step-body">
+                          {hasInput && (
+                            <div className="run-card__step-section">
+                              <span className="label">input:</span>
+                              <pre className="run-card__step-payload">
+                                {JSON.stringify(s.input_payload, null, 2)}
+                              </pre>
+                            </div>
+                          )}
+                          {hasOutput && (
+                            <div className="run-card__step-section">
+                              <span className="label">output:</span>
+                              <pre className="run-card__step-payload">
+                                {JSON.stringify(s.output_payload, null, 2)}
+                              </pre>
+                            </div>
+                          )}
+                          {isEmpty && (
+                            <div className="muted">No payload recorded.</div>
+                          )}
+                          {hasError && (
+                            <div className="run-card__step-section">
+                              <span className="label">error:</span>
+                              <pre className="run-card__step-payload run-card__step-payload--error">
+                                {s.error}
+                              </pre>
+                            </div>
+                          )}
+                        </div>
+                      </details>
+                    </li>
+                  )
+                })}
               </ol>
               {run.output_payload && (
-                <pre className="run-card__report">
-                  {JSON.stringify(run.output_payload, null, 2)}
-                </pre>
+                <details className="run-card__report-wrap">
+                  <summary className="muted">final report</summary>
+                  <pre className="run-card__report">
+                    {JSON.stringify(run.output_payload, null, 2)}
+                  </pre>
+                </details>
               )}
               {run.error && <div className="error-banner">{run.error}</div>}
             </details>

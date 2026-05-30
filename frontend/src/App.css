@@ -472,6 +472,65 @@
   font-size: 0.78rem;
 }
 
+.run-card__step {
+  margin-bottom: 0.25rem;
+}
+
+.run-card__step > details > summary {
+  cursor: pointer;
+  list-style: revert;
+  padding: 0.15rem 0;
+}
+
+.run-card__step-head {
+  display: inline;
+}
+
+.run-card__step-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.run-card__step-when {
+  margin-left: 0.25rem;
+}
+
+.run-card__step-body {
+  margin: 0.3rem 0 0.3rem 1.1rem;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.run-card__step-section .label {
+  color: #8b95a3;
+  margin-right: 0.25rem;
+  font-size: 0.72rem;
+}
+
+.run-card__step-payload {
+  margin: 0.15rem 0 0 0;
+  padding: 0.4rem 0.55rem;
+  background: #050810;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.run-card__step-payload--error {
+  border-left: 2px solid #a02e2e;
+  color: #ffb1b1;
+}
+
+.run-card__report-wrap > summary {
+  cursor: pointer;
+  list-style: revert;
+  font-size: 0.78rem;
+  margin-top: 0.3rem;
+}
+
 .plan-section__caveat {
   margin-bottom: 0.5rem;
   font-size: 0.78rem;

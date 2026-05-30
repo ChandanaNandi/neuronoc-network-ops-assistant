@@ -139,13 +139,35 @@ Conventions:
 - UI: approval form gains an operator dropdown (sourced from `/api/operators`); empty/failed list falls back cleanly to the existing free-form name input.
 - **Not production auth.** No password storage, no JWT, no OAuth, no SSO, no RBAC enforcement. `role` is advisory only. Existing CLI/script callers that pass only `operator_name` continue to work unchanged.
 
-## Phase 13B — Local operator management UI *(current)*
+## Phase 13B — Local operator management UI ✓
 
 - `OperatorsPanel` component renders a compact horizontal strip between the status grid and the master/detail: count + one chip per operator (`display_name` · `[role]` · relative-age timestamp) + an inline create form (display_name input + role select).
 - Operators state lifted to `App` so the management panel and the approval-form dropdown share a single source of truth — a newly-created operator appears in the dropdown immediately.
 - 409 on duplicate `display_name` surfaces as an inline `role="alert"` error; the form stays open with the typed value intact.
 - **Frontend-only**, no backend code change, no migration, no new dependency. Same Phase 13A guardrails apply: no passwords, no tokens, no sessions, no RBAC enforcement.
 - UI-created operator rows (test names prefixed `e2e-ui-op-` from the e2e suite, plus anything you create manually) accumulate in the dev DB by design. No delete endpoint; cleanup is a one-line `psql` recipe documented in `frontend/README.md`.
+
+## Phase 14A — GitHub Actions CI workflow ✓
+
+- `.github/workflows/ci.yml` runs the same local-quality gates on every PR/push: a `backend` job (uv sync → alembic upgrade → pytest -q against a Postgres 16 service container), a `frontend` job (pnpm install → pnpm build = `tsc -b && vite build`), and an `e2e` job (Playwright Chromium smoke against real backend + real Vite proxy + real Postgres; Playwright's `webServer` auto-starts uvicorn and Vite).
+- All three jobs run in parallel; e2e does its own setup so it doesn't wait on the others. Postgres dev creds match `app/core/config.py` defaults so no env overrides are needed.
+- **Out of scope by design:** no FRR Compose lab (needs Docker-in-Docker), no Ollama (no GPU; RCA test already accepts the deterministic fallback), no remediation execution path. The Phase 7 / Phase 10A AST safety scans still run as part of pytest.
+
+## Phase 14B — Playwright CI diagnostics ✓
+
+- `frontend/playwright.config.ts`: `trace: process.env.CI ? 'retain-on-failure' : 'on-first-retry'`. CI captures a trace on the very first failing run; locally we keep the lighter default so green runs write nothing to disk.
+- `retries: 0` kept — flakes stay visible, not silently retried.
+- The e2e CI job already uploads both `frontend/playwright-report/` (browsable HTML report) and `frontend/test-results/` (per-test `trace.zip` + failure screenshots) as a single artifact named `playwright-report`, only on failure, with 7-day retention. README has the operator-facing recipe.
+- Test/CI configuration + docs only; no app code, no schema, no dependencies, no new CI jobs.
+
+## Phase 15A — Agent run inspector UI *(current)*
+
+- Frontend-only: enriches the `run-card` block in `IncidentDetail` so operators can inspect a Phase 5 LangGraph audit trail without leaving the incident view.
+- Run-card header now shows: status badge, short id, `workflow_name`, started/completed timestamps, step count.
+- Each step is its own expandable `<details>` block carrying status badge, `step_name`, `created_at`, and on expand a compact `input` / `output` JSON payload pair (plus `error` text when present). The full final report stays accessible under a collapsed `final report` block.
+- Backend API unchanged — `GET /api/agents/runs/{id}` and `GET /api/agents/incidents/{id}/runs` already include `steps[]` with `input_payload`/`output_payload`/`error`/`created_at`/`completed_at`. No schema change, no migration, no dependency added.
+- Existing Playwright `.run-card` selector preserved; a new test opens the newest run after `Run agent analysis` and asserts all 6 deterministic LangGraph step names (`load_incident`, `anomaly_detection`, `evidence_summary`, `correlation`, `validation`, `report`) plus that the `report` step's payload renders.
+- Read-only inspection: expanding a step does NOT re-execute anything; opening the inspector does NOT contact a device. Same guardrails as every prior phase — no execution path, no auth/RBAC, no LLM behavior change.
 
 ## Beyond
 
@@ -156,4 +178,3 @@ Conventions:
 - Batfish-based validation, Terraform / OpenTofu for IaC.
 - Vector RAG over runbooks / device configs / past incidents (pgvector + embeddings).
 - Continuous telemetry ingest (real collector, not the Phase 8C one-shot scraper).
-- Frontend Agent Inspector + per-step trace UI.

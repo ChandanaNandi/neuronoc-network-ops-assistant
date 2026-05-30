@@ -99,6 +99,65 @@ test('Run agent analysis adds a new agent run card', async ({ page }) => {
   })
 })
 
+test('Agent run inspector reveals the six deterministic LangGraph steps', async ({
+  page,
+}) => {
+  await selectBgpIncident(page)
+
+  // Generate a fresh run so this test isn't sensitive to ordering vs. the
+  // previous test's run card.
+  const beforeCount = await page.locator('.run-card').count()
+  await page.getByRole('button', { name: 'Run agent analysis' }).click()
+  await expect(page.locator('.run-card')).toHaveCount(beforeCount + 1, {
+    timeout: 20_000,
+  })
+
+  // Newest run is first - the backend orders agent runs by created_at desc.
+  const newest = page.locator('.run-card').first()
+  await newest.locator('summary').first().click()
+
+  // The Phase 15A inspector renders one .run-card__step per LangGraph node,
+  // in graph execution order. Phase 5 declares 6 deterministic nodes.
+  const stepList = newest.locator('ol[aria-label="agent run steps"]')
+  await expect(stepList).toBeVisible()
+  await expect(stepList.locator('> li.run-card__step')).toHaveCount(6)
+
+  // Step names are stable - assert each one is present somewhere in the list.
+  for (const stepName of [
+    'load_incident',
+    'anomaly_detection',
+    'evidence_summary',
+    'correlation',
+    'validation',
+    'report',
+  ]) {
+    await expect(
+      stepList.locator('.run-card__step-name', { hasText: stepName }),
+    ).toHaveCount(1)
+  }
+
+  // Open the report step and confirm its output payload renders (the report
+  // node persists the IncidentAnalysisReport dict via _persist_step).
+  const reportStep = stepList.locator('li.run-card__step', {
+    has: page.locator('.run-card__step-name', { hasText: 'report' }),
+  })
+  await reportStep.locator('summary').click()
+  await expect(reportStep.locator('.run-card__step-payload').first()).toBeVisible()
+  await expect(reportStep.locator('.run-card__step-payload').first()).toContainText(
+    /suspected_root_cause|key_findings|incident_type/,
+  )
+
+  // Pin the empty-body fallback: every expanded step must surface EITHER an
+  // `output:` label (when output_payload has keys) OR the "No payload
+  // recorded." muted line. Today Phase 5's report node always persists
+  // output_payload, so the regex will match `output:` here - but the
+  // assertion guards against the {} === truthy bug recurring if a future
+  // step ever ships with an empty payload object.
+  await expect(reportStep.locator('.run-card__step-body')).toContainText(
+    /output:|No payload recorded\./,
+  )
+})
+
 test('Generate remediation plan adds a new plan card', async ({ page }) => {
   await selectBgpIncident(page)
 

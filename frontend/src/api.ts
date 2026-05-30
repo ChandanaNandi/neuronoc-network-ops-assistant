@@ -81,6 +81,10 @@ export interface AgentStep {
   output_payload: Record<string, unknown> | null
   error: string | null
   created_at: string
+  // Backend currently records only created_at for steps; this is kept
+  // optional so the inspector lights up the "completed" suffix
+  // automatically if the backend later adds it.
+  completed_at?: string | null
 }
 
 export interface AgentRun {

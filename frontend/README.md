@@ -77,6 +77,7 @@ This is the full path for a visual walk-through of every UI section.
    - An action message appears: `Agent run abc123ef completed; 6 steps recorded.`
    - A new `Agent runs` card appears with the 6 step names.
    - The `Latest agent run` status card jumps from `No runs yet` to `completed · <shortId>`.
+   - **Inspect the run (Phase 15A):** click the new run card's summary to expand it. The header shows status badge, short id, workflow name, started/completed timestamps, and step count. Inside is a numbered step list — click any step (`load_incident`, `anomaly_detection`, `evidence_summary`, `correlation`, `validation`, `report`) to drill into its recorded `input`/`output` payload (and `error`, when a step failed). The full final report is also available under a collapsed `final report` block at the bottom of the run card. Read-only; nothing re-executes when you expand.
 
 8. **Click `Generate RCA`**. If Ollama is reachable on `localhost:11434` and `qwen2.5:7b-instruct` is pulled, you'll see an RCA section appear with `(qwen2.5:7b-instruct)` in the title. Otherwise it'll say `(deterministic fallback)` and surface the templated summary. **Either way the RCA section persists** — it does not vanish on the next render (this was a Phase 9A cleanup).
 
