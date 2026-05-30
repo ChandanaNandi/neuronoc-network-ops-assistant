@@ -101,6 +101,58 @@ Approve / reject as admin     ←  Generate remediation plan    ←  Generate RC
 
 Each step is a single console button click; the underlying API responses are stored in Postgres and re-render the right-hand detail pane. No background jobs, no scheduler — every action is an explicit operator request.
 
+## Demo walkthrough
+
+Captures from a local run against the seeded simulator scenarios. Each step is a real button click against the live FastAPI backend; no data is mocked.
+
+### 1. Console dashboard
+
+![Console dashboard](docs/screenshots/01-dashboard.png)
+
+Backend online · 5 incidents seeded · 8 anomaly findings active · logged in as `local-operator [admin]`. Status grid, login panel, operators panel, runbooks search, telemetry preview header, and the full incident list — all in one frame.
+
+### 2. BGP incident — anomaly findings
+
+![BGP incident findings](docs/screenshots/02-bgp-findings.png)
+
+The BGP `Established → Idle` scenario triggers 3 deterministic anomaly rules: **R001** `bgp_neighbor_down_detected`, **R002** `route_withdrawal_detected`, **R007** `route_missing_detected`. Each finding carries severity, confidence, a specific next-step recommendation, and refs into the originating events/evidence.
+
+### 3. BGP incident — raw events
+
+![BGP incident events](docs/screenshots/03-bgp-events.png)
+
+The 3 event rows that triggered those findings: `route_withdrawal`, `bgp_state_change`, `reachability_loss`. Each is timestamped, attributed to its source device, and carries a structured JSONB `payload` that the agent workflow consumes downstream.
+
+### 4. Agent run inspector
+
+![Agent run inspector](docs/screenshots/04-agent-inspector.png)
+
+The 6-node LangGraph workflow (`load_incident → anomaly_detection → evidence_summary → correlation → validation → report`) completed in 78 ms, with per-step audit visible. Two runs shown — the inspector supports comparing successive runs against the same incident.
+
+### 5. Final agent report (step payload)
+
+![Final agent report](docs/screenshots/05-agent-step-payload.png)
+
+Expanding the `report` step exposes the synthesized `IncidentAnalysisReport` JSON: `suspected_root_cause`, `key_findings` (3), `correlated_signals`, `validation_summary`, `recommended_next_steps`, `requires_human_review: true`. Every step's input + output is persisted as JSONB for replay and audit.
+
+### 6. RCA explanation (local Ollama)
+
+![RCA explanation](docs/screenshots/06-rca.png)
+
+The Phase 6 RCA explainer running against live `qwen2.5:7b-instruct` on local Ollama (deterministic fallback kicks in when Ollama is unreachable). Output is constrained to the `RCAExplanation` schema — summary, likely root cause, recommended next steps — and grounded in incident evidence + runbook snippets only.
+
+### 7. Remediation plan (draft, approved)
+
+![Remediation plan](docs/screenshots/07-remediation-plan.png)
+
+A `bgp_neighbor_recovery` template plan is selected automatically based on the anomaly correlation. The full plan ships as structured JSON with `requires_approval: true`, pre/post checks, `proposed_commands` gated behind `# REQUIRES APPROVAL` comments, and an Ansible playbook draft whose risky tasks are `when: false`. The card here is already approved — green `APPROVED` badge + audit line `approved by local-operator at …` at the top. **Nothing was executed.**
+
+### 8. Validation preview (the safety shot)
+
+![Validation preview](docs/screenshots/08-validation-preview.png)
+
+The differentiating screen. Same plan id as #7, but a deliberately narrower API response: `source: remediation_plan · executable: false`. Renders pre-checks, post-checks, validation criteria, rollback steps, and safety notes only — `proposed_commands` and the Ansible playbook are **intentionally omitted** so this view cannot be mistaken for an actionable artifact. The whole NeuroNOC safety thesis in one screen.
+
 ## Current feature set
 
 | Phase | Surface | What it does |
