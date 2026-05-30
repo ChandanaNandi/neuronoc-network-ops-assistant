@@ -332,7 +332,7 @@ Conventions:
 - All 20 prior tests preserved including Phase 19C keyboard + accessible-names assertions, Phase 19B stale-result + reset-to-active-fixture, and Phase 18D route-interception + invalid-JSON zero-call.
 - Same guardrails — no backend change (zero `.py` files touched), no schema, no migration, no dependency added, no API surface change, no upload/import path, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
 
-## Phase 20B — Telemetry export filename sanitization *(current)*
+## Phase 20B — Telemetry export filename sanitization ✓
 
 - **Filename hardening only — NOT a new capability, no upload, no import, no persistence.** Replaces the direct `\`telemetry-${activeFixtureId}.json\`` interpolation in `downloadJson()` with a small `safeTelemetryFilename(id)` helper. Defends against path traversal (`foo/../bar` → `foo-bar`), control characters, Unicode oddness (zero-width spaces, etc.), and empty input if any future fixture id ships with surprising characters.
 - Pipeline (each step is one regex / string call, no allocations beyond the pipeline): lowercase → trim → replace runs of non-`[a-z0-9-]` with single `-` → collapse repeated `-` → trim leading/trailing `-` → fallback to `event` if the result is empty. Returns `telemetry-<safe>.json`.
@@ -341,6 +341,21 @@ Conventions:
 - **Fallback path (`telemetry-event.json`) is NOT directly tested through the UI.** The current `<select>` exposes only the five known fixture ids, and triggering the fallback would require either exporting the helper for a unit test (no unit-test harness exists — Vitest/Jest is deliberately not in the repo) or adding test-only UI scaffolding that has no operator value. Documented here so future readers understand the gap is intentional.
 - All 23 prior tests preserved including the Phase 20A `Download JSON respects the active fixture and makes zero telemetry API calls` route-interception test and the invalid-JSON-raw-text download test.
 - Same guardrails — no backend change (zero `.py` files touched), no schema, no migration, no dependency added, no API surface change, no upload/import path, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
+
+## Phase 21A — Lab snapshot collector: BGP + interfaces + config *(current)*
+
+- **First real read-only collection from the Phase 8B FRR lab, building toward the BGP-flap + interface-errors + config-evidence → incident → RCA → runbook → remediation-plan demo.** Strictly lab-only: `docker exec` against the known `neuronoc-lab-*` containers, every vtysh command starts with `show ` and is read-only. **No Netmiko / pyATS / Genie / NAPALM / Paramiko added; no new dependency at all.**
+- New umbrella `collect_lab_snapshot(db, *, runner=None, routers=None) -> LabSnapshotSummary` in `app/lab/collector.py`. Creates ONE `Incident` per call, `incident_type=lab_full_snapshot`, tagged `[lab-collector]`. Per-router output: BGP events (reusing the Phase 8C shapes), one `lab_interface_status` event per interface, one `running_config_snapshot` evidence row (capped at 64 KB with a `truncated` flag), and per-scrape `lab_*_collection_error` events on failure.
+- **Two new defense-in-depth guards** wired into both `_vtysh_json` and the new `_vtysh_text` (the helper that handles `show running-config` since it's not JSON):
+  - `_assert_known_router(name)` — rejects any name not in `LAB_ROUTERS_SET` (`edge-1`, `edge-2`, `core-1`, `branch-1`). Stops `docker exec` from ever being pointed at an arbitrary container via a wild `routers=` kwarg.
+  - `_assert_show_command(cmd)` — rejects any vtysh command that doesn't start with `show ` (case-insensitive) OR contains a forbidden token (`clear`, `reset`, `debug`, `configure`, `conf t`, `write`, `copy`, `reload`, `delete`, `enable`, `no debug`). Whole-word matching via space-padded haystack — no false-positives like `showclear`.
+- **Severity escalation**: low (everything healthy) → medium (any not-Established peer OR any interface with `input_errors > 0` or `output_errors > 0`) → high (any per-scrape failure OR any interface admin/oper down OR `lineProtocol` containing "down").
+- New endpoint `POST /api/lab/collect/snapshot` → `LabSnapshotSummary`. CLI extended with `--collect-snapshot` (mutually exclusive with the existing `--collect` and `--watch`).
+- **Backward-compat pinned**: `collect_lab_bgp_snapshot()` and `POST /api/lab/collect/bgp` are unchanged in behavior AND shape; a dedicated test (`test_api_collect_bgp_unchanged_by_phase21a`) verifies the BGP-only response body does NOT carry the new snapshot fields. Phase 8C tests (17) all still pass without modification.
+- Frontend: new `Collect lab snapshot` button next to the existing `Collect lab BGP snapshot` in the header. New `api.collectLabSnapshot()` + `LabSnapshotSummary` interface mirror the backend. Both buttons are disabled while either is in flight. The selected incident jumps to the new snapshot Incident on success so the operator sees it immediately.
+- Tests: 15 new in `test_lab_collector.py` (32 total) covering: 2 `_assert_known_router` paths, 3 `_assert_show_command` paths (including forbidden-token-in-show), umbrella happy-path with 4 routers / 6 peers / 4 interfaces / 4 configs, per-router config evidence shape, three severity escalations (one peer not-Established → medium / interface errors → medium / interface down → high), scrape-failure → high + dedicated error event, oversize config → `truncated=True` with content capped at 64 KB, new API endpoint happy-path, BGP-only endpoint shape unchanged, and new `--collect-snapshot` CLI mode.
+- **Out of scope** (deferred): per-issue incident decomposition (single umbrella Incident only — Phase 21B candidate), route table sample, syslog sample, latency/ping sample, Netmiko/pyATS/NAPALM (explicitly never in this phase), external device targeting.
+- Same guardrails as every prior phase — no schema migration, no dependency added, no LLM behavior change, no remediation execution path, no device connection outside lab containers, no auth/RBAC, no background daemon/scheduler.
 
 ## Beyond
 

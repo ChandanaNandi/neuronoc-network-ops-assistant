@@ -21,6 +21,10 @@ export default function App() {
   const [detailRefresh, setDetailRefresh] = useState(0)
 
   const [collecting, setCollecting] = useState(false)
+  // Phase 21A: a separate in-flight flag for the umbrella snapshot so the
+  // two collect buttons stay independently labelled. Both are disabled
+  // while either is running so a user can't accidentally fire both.
+  const [collectingSnapshot, setCollectingSnapshot] = useState(false)
   const [lastLabCollection, setLastLabCollection] =
     useState<LabBgpCollectionSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -75,6 +79,26 @@ export default function App() {
     }
   }
 
+  async function collectLabFullSnapshot() {
+    // Phase 21A: umbrella collect - BGP + interfaces + running-config land
+    // as ONE Incident with mixed events + per-router config evidence.
+    setCollectingSnapshot(true)
+    setError(null)
+    try {
+      const summary = await api.collectLabSnapshot()
+      // We don't surface this in StatusGrid (the latest BGP collection
+      // is what the "FRR lab collector" card tracks) - but we DO want
+      // the new incident selected so the operator sees it immediately.
+      setSelectedId(summary.incident_id)
+      refreshAll()
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.detail : 'lab snapshot failed'
+      setError(`Lab snapshot: ${msg}`)
+    } finally {
+      setCollectingSnapshot(false)
+    }
+  }
+
   return (
     <div className="app">
       <header className="app__header">
@@ -93,9 +117,21 @@ export default function App() {
             type="button"
             className="btn btn--primary"
             onClick={collectLab}
-            disabled={collecting}
+            disabled={collecting || collectingSnapshot}
+            title="Phase 8C BGP-only snapshot (kept for back-compat)"
           >
             {collecting ? 'Collecting lab...' : 'Collect lab BGP snapshot'}
+          </button>
+          <button
+            type="button"
+            className="btn btn--primary"
+            onClick={collectLabFullSnapshot}
+            disabled={collecting || collectingSnapshot}
+            title="Phase 21A full lab snapshot: BGP + interface counters + running-config"
+          >
+            {collectingSnapshot
+              ? 'Collecting snapshot...'
+              : 'Collect lab snapshot'}
           </button>
         </div>
       </header>

@@ -244,6 +244,23 @@ export interface LabBgpCollectionSummary {
   errors: string[]
 }
 
+// Phase 21A umbrella lab snapshot: BGP + interfaces + running-config in
+// one Incident. Mirrors `LabSnapshotSummary` in app/lab/collector.py.
+export interface LabSnapshotSummary {
+  incident_id: string
+  routers_seen: number
+  peers_seen: number
+  established_count: number
+  non_established_count: number
+  interfaces_seen: number
+  interfaces_with_errors: number
+  interfaces_down: number
+  configs_collected: number
+  events_created: number
+  evidence_created: number
+  errors: string[]
+}
+
 export interface HealthResponse {
   status: string
   service: string
@@ -348,6 +365,10 @@ export const api = {
 
   collectLabBgp: (): Promise<LabBgpCollectionSummary> =>
     post<LabBgpCollectionSummary>('/api/lab/collect/bgp'),
+
+  // Phase 21A umbrella lab snapshot - BGP + interfaces + running-config.
+  collectLabSnapshot: (): Promise<LabSnapshotSummary> =>
+    post<LabSnapshotSummary>('/api/lab/collect/snapshot'),
 
   approveRecommendation: (
     id: string,
