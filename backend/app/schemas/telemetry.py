@@ -33,3 +33,25 @@ class TelemetryObservationRead(BaseModel):
     payload: dict[str, Any]
     received_at: datetime
     created_incident_id: UUID | None = None
+
+
+class PersistedCorrelationResult(BaseModel):
+    """Phase 22B: result of running deterministic correlation against a
+    persisted `TelemetryObservation`.
+
+    - `correlated` is False only for the generic-fallback path
+      (`telemetry_observation` suggestion) where no Incident is opened.
+    - `incident_created` is False when correlation reused an existing
+      linked Incident (idempotency) OR when nothing was created at all.
+    - `incident_id` is set whenever an Incident exists (newly created
+      OR re-linked); null only on the no-correlation path.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    observation_id: UUID
+    correlated: bool
+    incident_created: bool
+    incident_id: UUID | None = None
+    suggested_incident_type: str
+    rationale: list[str]

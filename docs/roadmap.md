@@ -420,7 +420,7 @@ Conventions:
 - Real-lab rule coverage after 21E: covered from lab data: R001 `bgp_neighbor_down_detected`, R003 `interface_error_spike_detected` via collector payload, R007 `route_missing_detected`, R008 `link_down_detected`. Simulator-only / no lab signal: R002 `route_withdrawal_detected`, R004 `packet_loss_detected`, R005 `latency_spike_detected`, R006 `acl_deny_spike_detected`.
 - Same guardrails as every prior lab phase — read-only `show *` commands only, known-router allow-list, forbidden-token command guard, no external device targeting, no remediation execution, no LLM behavior change.
 
-## Phase 22A — Real telemetry persistence model and API *(current)*
+## Phase 22A — Real telemetry persistence model and API ✓
 
 - **Backend only — no frontend, no streaming, no daemon, no scheduler, no auto-correlation.** Turns the Phase 18 telemetry preview track from preview-only into a persisted sample store. The existing `/validate` and `/correlate/preview` endpoints stay **byte-for-byte unchanged** in behavior; persistence is a NEW endpoint triple, not a modification.
 - **New table `telemetry_observations`** via Alembic migration `82c1f3c27505` (parent `33112e9b5b1c`):
@@ -442,6 +442,20 @@ Conventions:
 - AST safety scan (`test_telemetry_package_blocks_network_and_execution_imports`) automatically covers the new `app/telemetry/persistence.py` because it scans `app/telemetry/` recursively — same 13-root forbid list applies.
 - **Out of scope** (explicitly deferred): auto-incident creation from observations, background ingest / scheduler, streaming, real SNMP/syslog collection, auth/RBAC, frontend wiring, telemetry-to-incident automation, any LLM call. The migration's `created_incident_id` FK exists today only so a future phase can populate it without another schema change.
 - Same guardrails as every prior phase — no new dependency, no external network/device contact, no remediation execution.
+
+## Phase 22B — Persisted telemetry correlation *(current)*
+
+- **Backend only — no migration, no new dependency, no frontend, no streaming, no daemon, no LLM call, no remediation execution.** Closes the Phase 22A boundary: the `created_incident_id` FK is now actually populated by a deterministic, on-demand correlate call.
+- **New service function** `correlate_persisted_telemetry_observation(db, observation_id)` in `app/telemetry/correlate_persisted.py` (new file). Loads a `TelemetryObservation`, round-trips its `payload` JSONB back through the `TelemetryEvent` schema, runs the existing Phase 18B `build_correlation_preview`, and acts on three deterministic paths:
+  1. **Already linked** (`obs.created_incident_id is not None`): returns the existing Incident link, `incident_created=False`. Idempotent re-run path.
+  2. **Generic fallback** (`preview.would_create_incident is False`): no Incident created, `correlated=False`, `created_incident_id` stays NULL. Matches Phase 18B's `telemetry_observation` semantics — unknown vendor traps don't auto-open incidents.
+  3. **Specific match**: creates ONE `Incident` with `incident_type=preview.suggested_incident_type`, `title=preview.suggested_title`, `severity=preview.suggested_severity` + ONE `IncidentEvent` with `event_type=preview.suggested_event_type`, `source=preview.suggested_event_source`, `payload=preview.suggested_event_payload`, then stamps `created_incident_id` on the observation.
+- **New schema** `PersistedCorrelationResult` (`app/schemas/telemetry.py`, `extra="forbid"`): `{observation_id, correlated, incident_created, incident_id, suggested_incident_type, rationale}`. Small, deterministic, intentionally not a generic-purpose result wrapper.
+- **New exception** `TelemetryObservationNotFoundError` — raised on missing id, mapped to HTTP 404.
+- **New endpoint** `POST /api/telemetry/observations/{id}/correlate` → `PersistedCorrelationResult`. Wired in `app/api/telemetry.py`; existing endpoints (`/validate`, `/correlate/preview`, the Phase 22A persistence triple) are byte-for-byte unchanged in behavior.
+- **8 new focused tests** in `backend/tests/test_telemetry_observations.py` (22 total in that file now): persisted BGP observation → creates Incident; created Incident has expected incident_type/title/severity; one IncidentEvent with suggested fields; observation gets `created_incident_id` stamped; correlating twice is idempotent (no duplicate Incident, no duplicate Event); unknown observation does NOT create an Incident and leaves FK null; 404 on missing id; LLM + remediation paths monkeypatched to raise (proves correlation never calls either); preview endpoint still non-persisting after 22B (`persisted: false` and zero new rows in either table).
+- The Phase 18B `/correlate/preview` endpoint remains explicitly non-persisting — same `persisted: Literal[False]` response, same row-count assertion still passes.
+- Same guardrails — no schema migration (Phase 22A's `created_incident_id` FK is what gets populated), no new dependency, no auth/RBAC, no background worker, no real device contact, no frontend work, no lab collector change.
 
 ## Beyond
 

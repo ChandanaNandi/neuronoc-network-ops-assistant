@@ -282,3 +282,244 @@ def test_correlate_preview_remains_non_persisting_after_phase22a(
         select(func.count()).select_from(TelemetryObservation)
     )
     assert after == before
+
+
+# ============================================================
+# Phase 22B - correlate persisted observations into incidents
+# ============================================================
+
+
+from app.db.models import IncidentEvent  # noqa: E402
+
+
+def test_correlate_persisted_bgp_observation_creates_incident(
+    client: TestClient, db_session: Session
+) -> None:
+    """Phase 22B: a persisted BGP-shaped observation correlated via
+    POST /api/telemetry/observations/{id}/correlate must produce ONE
+    Incident with the suggested incident_type / title / severity from
+    the existing Phase 18B preview."""
+    post_resp = client.post(
+        "/api/telemetry/observations", json=_valid_payload()
+    )
+    obs_id = post_resp.json()["id"]
+    incidents_before = db_session.scalar(
+        select(func.count()).select_from(Incident)
+    )
+
+    response = client.post(
+        f"/api/telemetry/observations/{obs_id}/correlate"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["observation_id"] == obs_id
+    assert body["correlated"] is True
+    assert body["incident_created"] is True
+    assert body["incident_id"] is not None
+    assert body["suggested_incident_type"] == "bgp_neighbor_down"
+    assert body["rationale"]  # non-empty
+
+    # Exactly one new Incident with the expected shape.
+    incidents_after = db_session.scalar(
+        select(func.count()).select_from(Incident)
+    )
+    assert incidents_after == incidents_before + 1
+    incident = db_session.get(Incident, body["incident_id"])
+    assert incident is not None
+    assert incident.incident_type == "bgp_neighbor_down"
+    assert "BGP neighbor down" in incident.title or "BGP" in incident.title
+    assert incident.severity == "critical"  # critical TelemetrySeverity -> critical
+
+
+def test_correlate_creates_one_incident_event_with_suggested_fields(
+    client: TestClient, db_session: Session
+) -> None:
+    post_resp = client.post(
+        "/api/telemetry/observations", json=_valid_payload()
+    )
+    obs_id = post_resp.json()["id"]
+    resp = client.post(
+        f"/api/telemetry/observations/{obs_id}/correlate"
+    )
+    incident_id = resp.json()["incident_id"]
+
+    events = db_session.scalars(
+        select(IncidentEvent).where(IncidentEvent.incident_id == incident_id)
+    ).all()
+    assert len(events) == 1
+    e = events[0]
+    assert e.event_type == "bgp_state_change"  # Phase 18B suggested for BGP
+    assert e.source == "snmp:edge-1"  # suggested_event_source = original source
+    # Payload nests under "telemetry" key per Phase 18B contract.
+    assert e.payload is not None
+    assert "telemetry" in e.payload
+    assert e.payload["telemetry"]["source"] == "snmp:edge-1"
+
+
+def test_correlate_sets_created_incident_id_on_observation(
+    client: TestClient, db_session: Session
+) -> None:
+    post_resp = client.post(
+        "/api/telemetry/observations", json=_valid_payload()
+    )
+    obs_id = post_resp.json()["id"]
+    resp = client.post(
+        f"/api/telemetry/observations/{obs_id}/correlate"
+    )
+    incident_id = resp.json()["incident_id"]
+
+    # Reload via GET to verify the FK was persisted, not just returned in-memory.
+    refreshed = client.get(f"/api/telemetry/observations/{obs_id}")
+    assert refreshed.json()["created_incident_id"] == incident_id
+
+
+def test_correlating_the_same_observation_twice_is_idempotent(
+    client: TestClient, db_session: Session
+) -> None:
+    """Re-running correlate on a row with `created_incident_id` already
+    set must return the SAME incident_id, NOT create a duplicate
+    Incident, and surface `incident_created=False`."""
+    post_resp = client.post(
+        "/api/telemetry/observations", json=_valid_payload()
+    )
+    obs_id = post_resp.json()["id"]
+
+    first = client.post(f"/api/telemetry/observations/{obs_id}/correlate")
+    incidents_after_first = db_session.scalar(
+        select(func.count()).select_from(Incident)
+    )
+    assert first.json()["incident_created"] is True
+
+    second = client.post(f"/api/telemetry/observations/{obs_id}/correlate")
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body["incident_created"] is False
+    assert second_body["correlated"] is True
+    assert second_body["incident_id"] == first.json()["incident_id"]
+
+    # No new Incident row.
+    incidents_after_second = db_session.scalar(
+        select(func.count()).select_from(Incident)
+    )
+    assert incidents_after_second == incidents_after_first
+
+    # And no second IncidentEvent either.
+    events = db_session.scalars(
+        select(IncidentEvent).where(
+            IncidentEvent.incident_id == first.json()["incident_id"]
+        )
+    ).all()
+    assert len(events) == 1
+
+
+def test_correlate_unknown_observation_does_not_create_incident(
+    client: TestClient, db_session: Session
+) -> None:
+    """Phase 18B generic-fallback path: an event with no rule-keyword
+    match maps to `telemetry_observation` with `would_create_incident=False`.
+    Correlation must respect that: no Incident, no IncidentEvent,
+    `created_incident_id` stays null."""
+    # Same shape as the Phase 19A "unknown vendor" fixture: no BGP /
+    # interface / latency / route / ACL keywords.
+    unknown_payload = _valid_payload(
+        event_type="vendor_proprietary_trap",
+        message="device emitted a vendor-specific diagnostic",
+        labels={"vendor": "acme-net", "trap_kind": "diag-notify"},
+        raw={"trap_oid": "1.3.6.1.4.1.99999.1.2.3"},
+    )
+    post_resp = client.post(
+        "/api/telemetry/observations", json=unknown_payload
+    )
+    obs_id = post_resp.json()["id"]
+    incidents_before = db_session.scalar(
+        select(func.count()).select_from(Incident)
+    )
+
+    response = client.post(
+        f"/api/telemetry/observations/{obs_id}/correlate"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["correlated"] is False
+    assert body["incident_created"] is False
+    assert body["incident_id"] is None
+    assert body["suggested_incident_type"] == "telemetry_observation"
+
+    # No Incident row created.
+    incidents_after = db_session.scalar(
+        select(func.count()).select_from(Incident)
+    )
+    assert incidents_after == incidents_before
+
+    # FK on the observation row stays null.
+    refreshed = client.get(f"/api/telemetry/observations/{obs_id}")
+    assert refreshed.json()["created_incident_id"] is None
+
+
+def test_correlate_404_for_missing_observation_id(client: TestClient) -> None:
+    response = client.post(
+        f"/api/telemetry/observations/{uuid4()}/correlate"
+    )
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_correlate_endpoint_does_not_call_llm_or_remediation(
+    client: TestClient, db_session: Session, monkeypatch
+) -> None:
+    """Pin that correlation runs deterministically: no LLM (Ollama), no
+    remediation planner. Stub both at the module level so any accidental
+    invocation would raise instead of silently calling out."""
+    from app.llm import ollama as ollama_module
+    from app.remediation import planner as planner_module
+
+    def _explode_ollama(*a, **kw):
+        raise AssertionError(
+            "correlation must not call Ollama / generate_ollama_json"
+        )
+
+    def _explode_remediation(*a, **kw):
+        raise AssertionError(
+            "correlation must not call remediation planner"
+        )
+
+    monkeypatch.setattr(
+        ollama_module, "generate_ollama_json", _explode_ollama
+    )
+    monkeypatch.setattr(
+        planner_module, "build_remediation_plan", _explode_remediation
+    )
+
+    post_resp = client.post(
+        "/api/telemetry/observations", json=_valid_payload()
+    )
+    obs_id = post_resp.json()["id"]
+    resp = client.post(
+        f"/api/telemetry/observations/{obs_id}/correlate"
+    )
+    assert resp.status_code == 200
+    assert resp.json()["incident_created"] is True
+
+
+def test_preview_endpoint_remains_non_persisting_after_phase22b(
+    client: TestClient, db_session: Session
+) -> None:
+    """Phase 22B backward-compat pin: `/correlate/preview` is unchanged.
+    The Phase 22A pin still holds AND no Incident row appears either."""
+    obs_before = db_session.scalar(
+        select(func.count()).select_from(TelemetryObservation)
+    )
+    inc_before = db_session.scalar(
+        select(func.count()).select_from(Incident)
+    )
+    response = client.post(
+        "/api/telemetry/correlate/preview", json=_valid_payload()
+    )
+    assert response.status_code == 200
+    assert response.json()["persisted"] is False
+    assert db_session.scalar(
+        select(func.count()).select_from(TelemetryObservation)
+    ) == obs_before
+    assert db_session.scalar(
+        select(func.count()).select_from(Incident)
+    ) == inc_before

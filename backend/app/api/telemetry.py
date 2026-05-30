@@ -19,7 +19,14 @@ from sqlalchemy.orm import Session
 
 from app.db.models import TelemetryObservation
 from app.db.session import get_db
-from app.schemas.telemetry import TelemetryObservationRead
+from app.schemas.telemetry import (
+    PersistedCorrelationResult,
+    TelemetryObservationRead,
+)
+from app.telemetry.correlate_persisted import (
+    TelemetryObservationNotFoundError,
+    correlate_persisted_telemetry_observation,
+)
 from app.telemetry.correlator import (
     TelemetryCorrelationPreview,
     build_correlation_preview,
@@ -150,3 +157,33 @@ def get_telemetry_observation(
             detail=f"telemetry observation {observation_id} not found",
         )
     return obs
+
+
+@router.post(
+    "/observations/{observation_id}/correlate",
+    response_model=PersistedCorrelationResult,
+)
+def correlate_observation(
+    observation_id: UUID, db: Session = Depends(get_db)
+) -> PersistedCorrelationResult:
+    """Phase 22B: deterministically correlate a persisted observation into
+    an Incident.
+
+    Loads the row, re-runs the existing Phase 18B `build_correlation_preview`
+    over its payload, and acts on the result:
+      - generic-fallback preview → no Incident created, `correlated=False`
+      - already-linked observation → returns the existing link,
+        `incident_created=False` (idempotent)
+      - specific match → creates one Incident + one IncidentEvent and
+        stamps `created_incident_id` on the observation
+
+    Returns `PersistedCorrelationResult` describing what happened.
+    404 if the observation id is unknown. **No LLM, no remediation
+    execution, no device contact.**
+    """
+    try:
+        return correlate_persisted_telemetry_observation(db, observation_id)
+    except TelemetryObservationNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
