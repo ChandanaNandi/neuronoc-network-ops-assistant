@@ -353,6 +353,18 @@ GitHub Actions runs the same local-quality gates on every PR and push (config: `
 - **Frontend job** — Node 20 + pnpm 10, `pnpm install --frozen-lockfile`, `pnpm build` (`tsc -b && vite build` under strict TypeScript).
 - **E2E job** — Playwright Chromium smoke against real backend + real Vite proxy + the same Postgres service container; Playwright's own `webServer` config starts uvicorn and Vite. Runs in parallel with the other two jobs (does its own setup; no artifact handoff). On failure, the `playwright-report` and `test-results` directories are uploaded as a build artifact.
 
+### Playwright artifacts on CI failure
+
+The CI workflow uploads two paths whenever the e2e job fails (artifact name `playwright-report`, retention 7 days):
+
+- `frontend/playwright-report/` — the standard Playwright HTML report (open `index.html` to navigate it).
+- `frontend/test-results/` — per-test directories containing **screenshots** for failing assertions and a `trace.zip` for the failing run. Open a trace via the [Playwright trace viewer](https://trace.playwright.dev/) — drag-and-drop the `trace.zip`, or `pnpm exec playwright show-trace path/to/trace.zip` locally.
+
+Trace behaviour is environment-aware (`playwright.config.ts`):
+
+- **CI** (`process.env.CI` set): `trace: 'retain-on-failure'` — a trace is captured for every test, kept only for the failing ones. This works even though `retries: 0`, which is what we want — flakes stay visible, not silently retried.
+- **Local**: `trace: 'on-first-retry'` — lighter default; no trace bundles written on green runs.
+
 **Not run in CI by design:**
 
 - The Phase 8B FRR Compose lab and the Phase 8C lab collector — they need FRR images and Docker-in-Docker; out of scope for this gate.

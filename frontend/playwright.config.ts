@@ -22,7 +22,12 @@ export default defineConfig({
   globalTeardown: './e2e/global-teardown.ts',
   use: {
     baseURL: 'http://localhost:5173',
-    trace: 'on-first-retry',
+    // Phase 14B: in CI we run with retries=0, so 'on-first-retry' would never
+    // actually capture anything. 'retain-on-failure' gives CI a trace on the
+    // very first failing run, which is what's useful for debuggability.
+    // Locally we keep the lighter default so green runs don't write trace
+    // bundles to disk.
+    trace: process.env.CI ? 'retain-on-failure' : 'on-first-retry',
     screenshot: 'only-on-failure',
   },
   webServer: [
