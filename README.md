@@ -356,4 +356,4 @@ docker-compose.yml
 
 ## License & status
 
-Open-source, pre-alpha. Phases 1–23 implemented; Phase 24 is documentation finish. Not yet a production NetOps tool — no continuous telemetry pipeline, no remediation execution path, local dev auth only. Suitable as a working portfolio demonstration of safety-first agentic NetOps architecture.
+Open-source, pre-alpha. Phases 1–24 implemented. Current version is portfolio-ready / pre-alpha; not a production NetOps tool. No continuous telemetry pipeline, no remediation execution path, local dev auth only. Suitable as a working portfolio demonstration of safety-first agentic NetOps architecture.
