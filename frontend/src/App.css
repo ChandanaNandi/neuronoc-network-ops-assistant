@@ -932,6 +932,12 @@
   font-style: italic;
 }
 
+.telemetry-panel__results-caveat {
+  font-size: 0.7rem;
+  font-style: italic;
+  margin-top: 0.3rem;
+}
+
 .telemetry-panel__textarea {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.78rem;

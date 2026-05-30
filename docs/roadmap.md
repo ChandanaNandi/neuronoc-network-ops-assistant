@@ -270,7 +270,7 @@ Conventions:
 - Panel placement and default-collapsed behavior unchanged. No new client code paths added — the panel itself, the API wrappers, and the backend endpoints are all untouched.
 - Same guardrails — no backend change (zero `.py` files touched), no schema, no migration, no dependency added, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
 
-## Phase 19A — Telemetry preview fixtures for reusable scenarios *(current)*
+## Phase 19A — Telemetry preview fixtures for reusable scenarios ✓
 
 - **Client-side examples only — NOT ingestion, replay, or persistence.** Adds a compact `Sample fixture` dropdown above the textarea in the existing `TelemetryPanel`. Selecting an entry replaces the textarea JSON; nothing else in the UI flow changes.
 - Five hard-coded fixtures, defined as a `FIXTURES` constant array at module scope in `src/components/TelemetryPanel.tsx`:
@@ -286,6 +286,21 @@ Conventions:
   - `Telemetry preview: unknown vendor fixture falls back to telemetry_observation` — picks `unknown`, clicks `Preview correlation`, and asserts the rendered dl's `<dd>` for `would_create_incident` is `false`, `would_create_event` is `true`, and `persisted` is `false`.
 - All 14 prior Phase 18C/18D tests preserved, including the route-interception assertions and the invalid-JSON zero-call assertion.
 - Same guardrails — no backend change, no schema, no migration, no dependency added, no new test framework, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
+
+## Phase 19B — Telemetry fixture reset and stale-result polish *(current)*
+
+- **UI polish only — NOT new telemetry ingestion or persistence.** Tightens the Phase 19A fixture picker so a displayed result never looks like it belongs to a newly-selected or just-edited payload when it was actually produced by an older one.
+- New `clearResultsAndErrors()` helper in `TelemetryPanel` nulls all four ephemeral states (`validateResult`, `correlateResult`, `parseError`, `apiError`) in one call. Wired into:
+  - `loadFixture(id)` — picking a different fixture clears prior results.
+  - `resetToSample()` — clicking Reset clears prior results.
+  - textarea `onChange` — manual edits clear prior results (and only triggers when `e.target.value !== json` so React state churn from re-renders doesn't flicker the result).
+- Reset semantics unchanged from Phase 19A — `Reset to sample` still snaps to the **currently-active** fixture, not always BGP. Pinned by the new `Reset to sample after editing returns to the active fixture, not BGP` test which selects `unknown`, edits the textarea to `{ "edited": true }`, clicks Reset, and asserts the textarea is back to `vendor_proprietary_trap` (with an explicit `not.toHaveValue(/bgp_neighbor_down/)` so a regression to "always reset to default" would fail).
+- Tiny muted caveat `Results reflect the last submitted payload.` renders above the result blocks only when at least one result is on screen — quiet reminder that re-clicking is what refreshes the output. ~3-line CSS addition; no layout shift on the empty state.
+- Two new Playwright tests added (18 total now):
+  - `Telemetry preview clears stale result block when fixture is switched` — preview BGP fixture → switch to unknown → asserts the BGP result block goes to `count(0)` BEFORE the next click → re-preview → asserts fresh result is `telemetry_observation` with zero BGP leakage.
+  - `Reset to sample after editing returns to the active fixture, not BGP` — see above.
+- All 16 prior tests preserved including the Phase 18D route-interception + invalid-JSON zero-call assertions and the Phase 19A fixture-switch + unknown-fallback tests.
+- Same guardrails — no backend change (zero `.py` files touched), no schema, no migration, no dependency added, no new test framework, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
 
 ## Beyond
 

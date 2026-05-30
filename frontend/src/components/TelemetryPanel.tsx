@@ -203,20 +203,29 @@ export function TelemetryPanel() {
     }
   }
 
+  // Phase 19B: any operation that changes the payload source - picking a
+  // new fixture, manually editing the textarea, or resetting to the active
+  // fixture - must clear the previously-rendered result so the operator
+  // never sees a result block that belongs to an older payload.
+  function clearResultsAndErrors() {
+    setValidateResult(null)
+    setCorrelateResult(null)
+    setParseError(null)
+    setApiError(null)
+  }
+
   function loadFixture(id: string) {
     const fixture = findFixture(id)
     setActiveFixtureId(fixture.id)
     setJson(fixtureJson(fixture))
-    setParseError(null)
-    setApiError(null)
+    clearResultsAndErrors()
   }
 
   function resetToSample() {
     // Snap back to the currently-active fixture so picking "unknown vendor"
     // then editing then resetting brings back the unknown vendor, not BGP.
     setJson(fixtureJson(findFixture(activeFixtureId)))
-    setParseError(null)
-    setApiError(null)
+    clearResultsAndErrors()
   }
 
   const busy = validateLoading || correlateLoading
@@ -276,10 +285,14 @@ export function TelemetryPanel() {
             spellCheck={false}
             value={json}
             onChange={(e) => {
-              setJson(e.target.value)
-              // Clear parse error as soon as the user edits; let them see
-              // success/failure on the next submit instead of stale red.
-              if (parseError) setParseError(null)
+              // Phase 19B: editing the JSON makes any visible result stale -
+              // it was produced for a different payload. Clear the result
+              // blocks AND both error kinds so the operator sees a clean
+              // slate and submits to see fresh output.
+              if (e.target.value !== json) {
+                setJson(e.target.value)
+                clearResultsAndErrors()
+              }
             }}
             disabled={busy}
           />
@@ -322,6 +335,12 @@ export function TelemetryPanel() {
           {apiError && (
             <div className="error-banner telemetry-panel__api-error" role="alert">
               API rejected payload: {apiError}
+            </div>
+          )}
+
+          {(validateResult || correlateResult) && (
+            <div className="muted telemetry-panel__results-caveat">
+              Results reflect the last submitted payload.
             </div>
           )}
 

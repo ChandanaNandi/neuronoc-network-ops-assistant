@@ -598,6 +598,68 @@ test('Telemetry fixture picker swaps the textarea contents to the selected event
   }
 })
 
+test('Telemetry preview clears stale result block when fixture is switched', async ({
+  page,
+}) => {
+  // Phase 19B contract: a result block from a prior payload must NOT
+  // remain on screen after the operator picks a different fixture - the
+  // displayed result must always belong to the most recently submitted
+  // payload.
+  await page.goto('/')
+  const panel = page.locator('.telemetry-panel')
+  await panel.locator('summary').first().click()
+
+  // Default BGP fixture - produce a result.
+  await panel.getByRole('button', { name: /^Preview correlation$/i }).click()
+  const result = panel.locator('.telemetry-panel__result')
+  await expect(result).toBeVisible({ timeout: 5_000 })
+  await expect(result).toContainText('bgp_neighbor_down')
+
+  // Switch fixture - the stale BGP result must disappear BEFORE the
+  // operator clicks preview again. If we left it on screen, it would
+  // misrepresent the unknown fixture they're about to submit.
+  await panel.getByLabel('telemetry sample fixture').selectOption('unknown')
+  await expect(result).toHaveCount(0)
+
+  // Now re-submit and confirm the fresh result reflects the new fixture
+  // with zero BGP leakage.
+  await panel.getByRole('button', { name: /^Preview correlation$/i }).click()
+  await expect(result).toBeVisible({ timeout: 5_000 })
+  await expect(result).toContainText('telemetry_observation')
+  await expect(result).not.toContainText('bgp_neighbor_down')
+})
+
+test('Reset to sample after editing returns to the active fixture, not BGP', async ({
+  page,
+}) => {
+  // Phase 19A semantics preserved by Phase 19B: Reset snaps back to the
+  // currently-active fixture, not always BGP. So picking unknown, then
+  // editing the textarea, then resetting must bring back the unknown
+  // fixture's JSON - never BGP.
+  await page.goto('/')
+  const panel = page.locator('.telemetry-panel')
+  await panel.locator('summary').first().click()
+
+  await panel.getByLabel('telemetry sample fixture').selectOption('unknown')
+  const textarea = panel.getByLabel('telemetry event json')
+  await expect(textarea).toHaveValue(/vendor_proprietary_trap/)
+
+  // Edit the textarea to something completely different so we can prove
+  // the reset actually restored the unknown fixture (not just left
+  // whatever was there).
+  await textarea.fill('{ "edited": true }')
+  await expect(textarea).not.toHaveValue(/vendor_proprietary_trap/)
+  await expect(textarea).toHaveValue('{ "edited": true }')
+
+  await panel.getByRole('button', { name: /^Reset to sample$/i }).click()
+
+  // Active fixture is unknown, so reset returns to vendor_proprietary_trap.
+  await expect(textarea).toHaveValue(/vendor_proprietary_trap/)
+  // And critically NOT BGP - that would be the bug if Reset always went
+  // back to the default fixture instead of the active one.
+  await expect(textarea).not.toHaveValue(/bgp_neighbor_down/)
+})
+
 test('Telemetry preview: unknown vendor fixture falls back to telemetry_observation', async ({
   page,
 }) => {
