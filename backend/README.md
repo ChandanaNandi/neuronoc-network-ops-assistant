@@ -1,6 +1,6 @@
 # NeuroNOC backend
 
-FastAPI + SQLAlchemy 2 + Alembic + psycopg 3. Phase 2 scope: incident data model and CRUD endpoints. No agents, no LLM, no anomaly detection.
+FastAPI + SQLAlchemy 2 + Alembic + psycopg 3. Hosts the incident schema, anomaly engine, LangGraph agent workflow, RCA explainer, plan-only remediation planner, lab collector, telemetry persistence/correlation, and Phase 23 bearer-token auth + admin RBAC.
 
 ## Setup
 
@@ -152,7 +152,7 @@ uv run python -m app.anomaly.engine --open --limit 50
 
 Both modes print a JSON array of findings to stdout. The engine is **read-only**; no findings are persisted. Phase 5 will introduce `agent_runs` for that.
 
-Rules currently shipped (7):
+Rules currently shipped (8):
 
 | Rule ID | Rule name | Trigger |
 |---|---|---|
@@ -163,6 +163,7 @@ Rules currently shipped (7):
 | R005 | `latency_spike_detected` | `payload.metric_name` ∈ {`latency_ms`, `rtt_ms`} with value > 100 |
 | R006 | `acl_deny_spike_detected` | `event_type=traffic_denied` OR `payload.metric_name == "acl_deny_hits"` with value > 0 |
 | R007 | `route_missing_detected` | `event_type=route_missing` OR evidence `payload.result == "not_in_table"` |
+| R008 | `link_down_detected` | Lab `lab_interface_status` event with `payload.down == True` (Phase 21C lab-only mapping) |
 
 ## LangGraph workflow (Phase 5)
 
