@@ -128,6 +128,28 @@ function findFixture(id: string): TelemetryFixture {
   return FIXTURES.find((f) => f.id === id) ?? FIXTURES[0]
 }
 
+// Phase 20B: keep export filenames deterministic and filesystem-safe even
+// if a future fixture id carries surprising characters. The five current
+// fixture ids (bgp / interface / latency / route-missing / unknown) all
+// round-trip unchanged through this pipeline.
+//
+// Pipeline:
+//   lowercase -> trim -> replace runs of non [a-z0-9-] with single '-'
+//   -> collapse repeated '-' -> trim leading/trailing '-'
+//   -> fallback to 'event' if empty
+//
+// Defends against path traversal (`foo/../bar` -> `foo-bar`), control
+// characters, Unicode oddness (zero-width spaces, etc.), and empty input.
+function safeTelemetryFilename(id: string): string {
+  const sanitized = id
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return `telemetry-${sanitized || 'event'}.json`
+}
+
 // Phase 18C operator-facing wrapper around the Phase 18A `/validate` and
 // Phase 18B `/correlate/preview` endpoints. Read-only by construction:
 // - neither endpoint persists anything (backend row-count tests pin this)
@@ -233,7 +255,7 @@ export function TelemetryPanel() {
     // no persistence. Uses browser primitives only: Blob + object URL +
     // temporary <a download>. Even invalid JSON downloads as raw text -
     // this is export, not validation.
-    const filename = `telemetry-${activeFixtureId}.json`
+    const filename = safeTelemetryFilename(activeFixtureId)
     const blob = new Blob([json], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')

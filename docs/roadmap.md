@@ -318,7 +318,7 @@ Conventions:
 - All 18 prior tests preserved, including the Phase 19B stale-result + reset-to-active-fixture assertions.
 - Same guardrails — no backend change (zero `.py` files touched), no schema, no migration, no dependency added (axe-core / @axe-core/playwright deliberately NOT added; no new test framework), no markup change, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
 
-## Phase 20A — Telemetry preview fixture export *(current)*
+## Phase 20A — Telemetry preview fixture export ✓
 
 - **Client-only export — NOT ingestion, replay, upload, or persistence.** Adds a small `Download JSON` button to `TelemetryPanel` that saves the current textarea contents as a local `.json` file. The button never calls the backend, never writes to `localStorage` / `sessionStorage` / cookies, and there is **no matching import / upload path** — operators can pull JSON out, not push it back in.
 - New `downloadJson()` helper uses browser primitives only: `new Blob([json], { type: 'application/json' })` → `URL.createObjectURL` → temporary `<a download>` attached to `document.body` → `click()` → detach → `setTimeout(() => URL.revokeObjectURL(url), 0)` to defer revoke by one tick so the download has fully initiated. Standard pattern; safe across browsers.
@@ -330,6 +330,16 @@ Conventions:
   - `Telemetry preview: Download JSON respects the active fixture and makes zero telemetry API calls` — intercepts both `/api/telemetry/validate` and `/api/telemetry/correlate/preview`, switches to the `unknown` fixture, downloads, settles 250 ms, asserts both call counts are **0** and the downloaded body contains `"event_type": "vendor_proprietary_trap"`.
   - `Telemetry preview: Download JSON exports raw textarea contents even when JSON is invalid` — fills the textarea with `{ this is not valid json }`, downloads, asserts the file body is exactly that string.
 - All 20 prior tests preserved including Phase 19C keyboard + accessible-names assertions, Phase 19B stale-result + reset-to-active-fixture, and Phase 18D route-interception + invalid-JSON zero-call.
+- Same guardrails — no backend change (zero `.py` files touched), no schema, no migration, no dependency added, no API surface change, no upload/import path, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
+
+## Phase 20B — Telemetry export filename sanitization *(current)*
+
+- **Filename hardening only — NOT a new capability, no upload, no import, no persistence.** Replaces the direct `\`telemetry-${activeFixtureId}.json\`` interpolation in `downloadJson()` with a small `safeTelemetryFilename(id)` helper. Defends against path traversal (`foo/../bar` → `foo-bar`), control characters, Unicode oddness (zero-width spaces, etc.), and empty input if any future fixture id ships with surprising characters.
+- Pipeline (each step is one regex / string call, no allocations beyond the pipeline): lowercase → trim → replace runs of non-`[a-z0-9-]` with single `-` → collapse repeated `-` → trim leading/trailing `-` → fallback to `event` if the result is empty. Returns `telemetry-<safe>.json`.
+- **The five current fixture filenames are pinned byte-for-byte unchanged**: `telemetry-bgp.json`, `telemetry-interface.json`, `telemetry-latency.json`, `telemetry-route-missing.json`, `telemetry-unknown.json`. Verified by tracing each id through the pipeline (no character outside `[a-z0-9-]`, no leading/trailing hyphens, no consecutive hyphens). Pinned by the new test that downloads under all 5 fixtures in sequence and asserts the exact `suggestedFilename()`.
+- One new Playwright test added (24 total now): `Telemetry preview: Download JSON filename is sanitized and stable for all five fixtures` iterates the 5 known fixtures, triggers a download per fixture, and asserts the exact `suggestedFilename()` byte-for-byte. The Phase 20A `telemetry-bgp.json` + `telemetry-unknown.json` filename assertions remain in their original tests too, so the pin lives at two layers.
+- **Fallback path (`telemetry-event.json`) is NOT directly tested through the UI.** The current `<select>` exposes only the five known fixture ids, and triggering the fallback would require either exporting the helper for a unit test (no unit-test harness exists — Vitest/Jest is deliberately not in the repo) or adding test-only UI scaffolding that has no operator value. Documented here so future readers understand the gap is intentional.
+- All 23 prior tests preserved including the Phase 20A `Download JSON respects the active fixture and makes zero telemetry API calls` route-interception test and the invalid-JSON-raw-text download test.
 - Same guardrails — no backend change (zero `.py` files touched), no schema, no migration, no dependency added, no API surface change, no upload/import path, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
 
 ## Beyond

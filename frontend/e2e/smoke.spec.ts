@@ -834,6 +834,38 @@ test('Telemetry preview: Download JSON respects the active fixture and makes zer
   expect(correlateCallCount).toBe(0)
 })
 
+test('Telemetry preview: Download JSON filename is sanitized and stable for all five fixtures', async ({
+  page,
+}) => {
+  // Phase 20B contract: the safeTelemetryFilename pipeline must leave the
+  // five current fixture ids byte-for-byte unchanged. If a future change
+  // to the helper accidentally over-sanitizes one of them (e.g. eats the
+  // hyphen in 'route-missing'), this test fails immediately. Keeps prior
+  // downloads + any operator scripts that consume these filenames working.
+  await page.goto('/')
+  const panel = page.locator('.telemetry-panel')
+  await panel.locator('summary').first().click()
+
+  const cases: { fixtureId: string; expectedFilename: string }[] = [
+    { fixtureId: 'bgp', expectedFilename: 'telemetry-bgp.json' },
+    { fixtureId: 'interface', expectedFilename: 'telemetry-interface.json' },
+    { fixtureId: 'latency', expectedFilename: 'telemetry-latency.json' },
+    {
+      fixtureId: 'route-missing',
+      expectedFilename: 'telemetry-route-missing.json',
+    },
+    { fixtureId: 'unknown', expectedFilename: 'telemetry-unknown.json' },
+  ]
+
+  for (const { fixtureId, expectedFilename } of cases) {
+    await panel.getByLabel('telemetry sample fixture').selectOption(fixtureId)
+    const downloadPromise = page.waitForEvent('download')
+    await panel.getByRole('button', { name: /^Download JSON$/ }).click()
+    const download = await downloadPromise
+    expect(download.suggestedFilename()).toBe(expectedFilename)
+  }
+})
+
 test('Telemetry preview: Download JSON exports raw textarea contents even when JSON is invalid', async ({
   page,
 }) => {
