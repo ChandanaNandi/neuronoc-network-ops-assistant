@@ -51,7 +51,16 @@ def _num(value: Any) -> float | None:
 
 
 def _device(payload: dict[str, Any]) -> str:
-    return str(payload.get("device") or payload.get("source") or "unknown")
+    # Phase 21C: the lab collector emits payloads keyed by `router` (the
+    # docker container short name) rather than `device`. Recognize that
+    # without breaking the existing simulator path - the precedence stays
+    # device > router > source > unknown.
+    return str(
+        payload.get("device")
+        or payload.get("router")
+        or payload.get("source")
+        or "unknown"
+    )
 
 
 def _ids(items: Iterable[IncidentEvent | IncidentEvidence]) -> list[str]:
@@ -65,19 +74,47 @@ _LOSS_METRICS = {"packet_loss_percent", "loss_pct", "loss_percent"}
 # ---------- rules ----------
 
 
+def _is_bgp_down_event(e: IncidentEvent) -> bool:
+    # Simulator path (Phase 3): a state-change event whose post-transition
+    # state is `Idle`.
+    if e.event_type == "bgp_state_change" and _payload(e).get("after") == "Idle":
+        return True
+    # Phase 21C: the Phase 21A lab collector emits a dedicated event_type
+    # for any peer not in `Established`. The collector only produces this
+    # row when state != "Established", so its presence alone is sufficient.
+    if e.event_type == "lab_bgp_peer_not_established":
+        return True
+    return False
+
+
 def rule_bgp_neighbor_down(
     incident: Incident,
     events: list[IncidentEvent],
     evidence: list[IncidentEvidence],
 ) -> list[AnomalyFinding]:
-    matches = [
-        e
-        for e in events
-        if e.event_type == "bgp_state_change" and _payload(e).get("after") == "Idle"
-    ]
+    matches = [e for e in events if _is_bgp_down_event(e)]
     if not matches:
         return []
-    p = _payload(matches[0])
+    first = matches[0]
+    p = _payload(first)
+    # Lab payloads use `peer` for the neighbor address; simulator uses
+    # `neighbor`. Recognize either, fall back to 'unknown'.
+    neighbor = p.get("neighbor") or p.get("peer") or "unknown"
+    # Preserve the simulator-path summary text byte-for-byte (existing RCA
+    # output, prior screenshots, and the regression test all depend on the
+    # "transitioned to Idle" phrasing). Lab-path events use a phrasing
+    # that fits the lab payload shape (state may be Active, Connect, etc.,
+    # not just Idle).
+    if first.event_type == "bgp_state_change":
+        summary = (
+            f"BGP session on {_device(p)} transitioned to Idle "
+            f"(neighbor {neighbor})."
+        )
+    else:  # lab_bgp_peer_not_established
+        summary = (
+            f"BGP session on {_device(p)} is not Established "
+            f"(neighbor {neighbor})."
+        )
     return [
         AnomalyFinding(
             rule_id="R001",
@@ -86,10 +123,7 @@ def rule_bgp_neighbor_down(
             confidence=0.95,
             incident_id=incident.id,
             incident_type=incident.incident_type,
-            summary=(
-                f"BGP session on {_device(p)} transitioned to Idle "
-                f"(neighbor {p.get('neighbor', 'unknown')})."
-            ),
+            summary=summary,
             evidence_refs=_ids(matches),
             recommended_next_step=(
                 "Verify L1/link state and BGP neighbor config on both ends; "
@@ -142,16 +176,45 @@ def rule_interface_error_spike(
     events: list[IncidentEvent],
     evidence: list[IncidentEvidence],
 ) -> list[AnomalyFinding]:
-    matches = [
-        e
-        for e in events
-        if _payload(e).get("metric_name") == "input_errors_per_min"
-        and (_num(_payload(e).get("metric_value")) or 0) > 50
-    ]
-    if not matches:
+    sim_matches: list[IncidentEvent] = []
+    lab_matches: list[IncidentEvent] = []
+    for e in events:
+        p = _payload(e)
+        # Phase 3 simulator path (preserved verbatim): rate-based metric.
+        if (
+            p.get("metric_name") == "input_errors_per_min"
+            and (_num(p.get("metric_value")) or 0) > 50
+        ):
+            sim_matches.append(e)
+            continue
+        # Phase 21C: lab snapshot event whose collector pre-computed
+        # `has_errors` from cumulative input/output error counters.
+        if (
+            e.event_type == "lab_interface_status"
+            and p.get("has_errors") is True
+        ):
+            lab_matches.append(e)
+    if not sim_matches and not lab_matches:
         return []
-    p = _payload(matches[0])
-    value = _num(p.get("metric_value"))
+
+    # Prefer the simulator's richer summary line when present so the
+    # existing test/UX is unchanged. Otherwise produce a lab-shaped line.
+    if sim_matches:
+        p = _payload(sim_matches[0])
+        value = _num(p.get("metric_value"))
+        summary = (
+            f"Input error rate on {_device(p)} {p.get('interface', '?')} "
+            f"is {value:.0f}/min (threshold 50/min)."
+        )
+    else:
+        p = _payload(lab_matches[0])
+        in_err = _num(p.get("input_errors")) or 0
+        out_err = _num(p.get("output_errors")) or 0
+        summary = (
+            f"Interface errors on {_device(p)} {p.get('interface', '?')}: "
+            f"input={in_err:.0f}, output={out_err:.0f}."
+        )
+
     return [
         AnomalyFinding(
             rule_id="R003",
@@ -160,14 +223,50 @@ def rule_interface_error_spike(
             confidence=0.9,
             incident_id=incident.id,
             incident_type=incident.incident_type,
-            summary=(
-                f"Input error rate on {_device(p)} {p.get('interface', '?')} "
-                f"is {value:.0f}/min (threshold 50/min)."
-            ),
-            evidence_refs=_ids(matches),
+            summary=summary,
+            evidence_refs=_ids(sim_matches) + _ids(lab_matches),
             recommended_next_step=(
                 "Inspect optics and patch cabling; if errors persist, "
                 "drain traffic and replace the SFP."
+            ),
+        )
+    ]
+
+
+def rule_link_down(
+    incident: Incident,
+    events: list[IncidentEvent],
+    evidence: list[IncidentEvidence],
+) -> list[AnomalyFinding]:
+    # Phase 21C: the Phase 21A lab collector flags admin/oper-down
+    # interfaces with `payload.down=True`. There is no equivalent
+    # simulator event today; the rule is lab-only and additive.
+    matches = [
+        e
+        for e in events
+        if e.event_type == "lab_interface_status"
+        and _payload(e).get("down") is True
+    ]
+    if not matches:
+        return []
+    p = _payload(matches[0])
+    return [
+        AnomalyFinding(
+            rule_id="R008",
+            rule_name="link_down_detected",
+            severity="high",
+            confidence=0.95,
+            incident_id=incident.id,
+            incident_type=incident.incident_type,
+            summary=(
+                f"Interface {p.get('interface', '?')} on {_device(p)} is down "
+                f"(admin={p.get('admin_status', 'unknown')}, "
+                f"oper={p.get('oper_status', 'unknown')})."
+            ),
+            evidence_refs=_ids(matches),
+            recommended_next_step=(
+                "Inspect L1 / cabling and the far-side switch-port state; "
+                "if the interface stays down, raise a hands-on remote ticket."
             ),
         )
     ]
@@ -331,4 +430,5 @@ RULES: list[RuleFn] = [
     rule_latency_spike,
     rule_acl_deny_spike,
     rule_route_missing,
+    rule_link_down,  # Phase 21C - lab-only addition for interface down
 ]

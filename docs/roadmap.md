@@ -357,7 +357,7 @@ Conventions:
 - **Out of scope** (deferred): per-issue incident decomposition (single umbrella Incident only — Phase 21B candidate), route table sample, syslog sample, latency/ping sample, Netmiko/pyATS/NAPALM (explicitly never in this phase), external device targeting.
 - Same guardrails as every prior phase — no schema migration, no dependency added, no LLM behavior change, no remediation execution path, no device connection outside lab containers, no auth/RBAC, no background daemon/scheduler.
 
-## Phase 21B — Lab snapshot demo-path test + docs *(current)*
+## Phase 21B — Lab snapshot demo-path test + docs ✓
 
 - **Tests + docs only — NOT a new capability.** Proves that the Phase 21A `collect_lab_snapshot()` output is consumable end-to-end by the existing chain (Phase 5 LangGraph → Phase 6 RCA → Phase 7 remediation planner) with no new plumbing.
 - One new backend integration test: `test_phase21b_lab_snapshot_feeds_full_workflow_end_to_end`. Builds a fault scenario (1 not-Established BGP peer + 1 interface with input errors via the existing `_snapshot_runner` fake), collects the snapshot, then walks the full chain:
@@ -369,6 +369,24 @@ Conventions:
 - **Playwright skipped on purpose.** Mocking `POST /api/lab/collect/snapshot` cleanly in the e2e suite would also require mocking the subsequent `GET /api/incidents/<id>` and detail-pane fetches (since the mock incident wouldn't exist in the test DB), which is more test infrastructure than this phase warrants. The user's spec explicitly carries that escape hatch ("If mocking this cleanly would require new test infrastructure, skip Playwright and keep it backend-only"). The 24/24 e2e suite is unchanged.
 - New "Demo path" section in `backend/README.md` walks the recruiter-demo flow: bring up the FRR lab → inject BGP/interface fault (`docker stop` or `vtysh ... shutdown` an interface) → click `Collect lab snapshot` → inspect the incident → run agent analysis → generate RCA → search runbook → generate remediation plan → approval still required. Explicitly lab-only; explicitly no execution.
 - Same guardrails as every prior phase — no new dependency, no schema migration, no external device contact (fake `_snapshot_runner` intercepts every `docker exec`), no remediation execution, no telemetry UI work, no Netmiko / pyATS / NAPALM / Paramiko, no frontend code change.
+
+## Phase 21C — Map lab snapshot events into anomaly findings *(current)*
+
+- **Backend rules + tests + docs only.** Closes the Phase 21B boundary: lab snapshot events now feed the existing Phase 4 anomaly rules, so a real lab fault produces specific findings that route Phase 7 to a specific remediation template instead of `generic_investigation`. No new collector behavior, no schema, no migration, no new dependency, no frontend change.
+- **Three event-to-finding mappings** (all reuse existing finding categories so downstream Phase 5 themes + Phase 7 templates pick up automatically):
+
+  | Lab event | Payload trigger | → finding | rule_id | Existing rule? |
+  |---|---|---|---|---|
+  | `lab_bgp_peer_not_established` | (presence is sufficient — collector only emits when state ≠ Established) | `bgp_neighbor_down_detected` | R001 | extended in place |
+  | `lab_interface_status` | `payload.has_errors == True` | `interface_error_spike_detected` | R003 | extended in place |
+  | `lab_interface_status` | `payload.down == True` | `link_down_detected` | R008 | **new rule** `rule_link_down` |
+- **Simulator behavior preserved verbatim** — the rule predicates handle both payload shapes (simulator's `device`/`neighbor`/`metric_name=input_errors_per_min` AND the lab collector's `router`/`peer`/`event_type=lab_*`). 58/58 prior anomaly+workflow+remediation tests still pass; a dedicated `test_simulator_bgp_summary_text_preserved_after_phase21c` belt-and-suspenders pins the original simulator summary text.
+- `_device()` helper now also recognizes `payload.router` (the docker container short name the lab collector emits), with precedence `device > router > source > unknown`.
+- New `"link_down_detected": "interface_physical_issue"` entry in `app/agents/workflow.py:_THEME_MAP` so the new finding routes to the existing interface remediation template (no new template needed).
+- **Plan-type upgrade pinned by the Phase 21B end-to-end test**: against the lab fault scenario (1 not-Established BGP peer + 1 interface with errors), `analyze_incident()` now returns specific findings; the Phase 5 workflow's `_THEME_MAP` produces `{"routing_failure", "interface_physical_issue"}`; Phase 7's `pick_template` iterates sorted themes and lands on `template_interface_errors_spike` first (plan_type `interface_physical_investigation`). Test asserts `plan.plan_type != "generic_investigation"` AND `len(direct_findings) >= 1` AND the finding names intersect the expected `{bgp_neighbor_down_detected, interface_error_spike_detected, link_down_detected}` set.
+- Six new focused anomaly tests (21 total in `test_anomaly.py`): the three positive mappings (BGP not-established → BGP finding; lab interface with `has_errors=True` → interface error finding; lab interface with `down=True` → link-down finding), the negative pin (healthy lab interface → no finding), the simulator-summary regression guard (asserts `"transitioned to Idle"` is present AND `"is not Established"` is NOT — pinning the simulator phrasing byte-for-byte), and a companion lab-phrasing test (asserts the lab path uses `"is not Established"` AND that the simulator phrasing has not leaked in — pinning both directions of the per-event-type branch).
+- README "Demo path" section updated: lab events now feed anomaly findings; remaining gap (route-table-sample + syslog-sample collectors not built yet) honestly documented.
+- Same guardrails as every prior phase — no new dependency, no schema migration, no external device contact (rule tests use direct event-payload fixtures, no docker), no remediation execution, no LLM behavior change, no Netmiko / pyATS / NAPALM / Paramiko, no frontend code change.
 
 ## Beyond
 

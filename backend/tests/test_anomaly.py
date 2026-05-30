@@ -181,3 +181,232 @@ def test_cli_prints_findings_as_json(
     parsed = json.loads(captured.out)
     assert isinstance(parsed, list)
     assert any(f["rule_name"] == "bgp_neighbor_down_detected" for f in parsed)
+
+
+# ============================================================
+# Phase 21C - lab-event mappings into existing rule outputs
+# ============================================================
+
+
+from app.db.models import Incident, IncidentEvent  # noqa: E402
+
+
+def _lab_incident(db: Session) -> Incident:
+    """Bare lab_full_snapshot Incident; tests attach events directly."""
+    incident = Incident(
+        title="Phase 21C test - lab snapshot",
+        severity="medium",
+        incident_type="lab_full_snapshot",
+        summary="[lab-collector] test fixture",
+    )
+    db.add(incident)
+    db.flush()
+    return incident
+
+
+def _attach(
+    db: Session,
+    incident: Incident,
+    *,
+    event_type: str,
+    payload: dict,
+    source: str = "lab:edge-1",
+    message: str = "test event",
+) -> IncidentEvent:
+    e = IncidentEvent(
+        incident_id=incident.id,
+        event_type=event_type,
+        source=source,
+        message=message,
+        payload=payload,
+    )
+    db.add(e)
+    db.flush()
+    return e
+
+
+def test_lab_bgp_not_established_produces_bgp_finding(
+    db_session: Session,
+) -> None:
+    """Phase 21C: lab_bgp_peer_not_established events flow through the
+    existing rule_bgp_neighbor_down and produce bgp_neighbor_down_detected
+    findings - same rule_id, same downstream theme/template mapping."""
+    incident = _lab_incident(db_session)
+    _attach(
+        db_session,
+        incident,
+        event_type="lab_bgp_peer_not_established",
+        payload={
+            "router": "edge-1",
+            "peer": "172.30.1.2",
+            "peer_as": 65000,
+            "state": "Active",
+            "_origin": "lab-collector",
+        },
+    )
+    findings = analyze_incident(db_session, incident.id)
+    bgp = [f for f in findings if f.rule_name == "bgp_neighbor_down_detected"]
+    assert len(bgp) == 1
+    assert bgp[0].rule_id == "R001"
+    assert "edge-1" in bgp[0].summary
+    assert "172.30.1.2" in bgp[0].summary  # peer surfaced via `peer` payload key
+
+
+def test_lab_interface_has_errors_produces_interface_error_finding(
+    db_session: Session,
+) -> None:
+    """Phase 21C: lab_interface_status with payload.has_errors=True flows
+    through the existing rule_interface_error_spike. Same rule_id, same
+    downstream theme/template mapping."""
+    incident = _lab_incident(db_session)
+    _attach(
+        db_session,
+        incident,
+        event_type="lab_interface_status",
+        payload={
+            "router": "edge-1",
+            "interface": "Gi0/1",
+            "admin_status": "up",
+            "oper_status": "up",
+            "line_protocol": "is up",
+            "input_errors": 42,
+            "output_errors": 0,
+            "down": False,
+            "has_errors": True,
+            "_origin": "lab-collector",
+        },
+    )
+    findings = analyze_incident(db_session, incident.id)
+    iface = [
+        f for f in findings if f.rule_name == "interface_error_spike_detected"
+    ]
+    assert len(iface) == 1
+    assert iface[0].rule_id == "R003"
+    assert "Gi0/1" in iface[0].summary
+    assert "edge-1" in iface[0].summary
+    # Lab-shape summary mentions input/output counters, not the per-min rate.
+    assert "input=42" in iface[0].summary
+
+
+def test_lab_interface_down_produces_link_down_finding(
+    db_session: Session,
+) -> None:
+    """Phase 21C: lab_interface_status with payload.down=True produces a
+    new link_down_detected finding via rule_link_down (R008). Routes to
+    the interface_physical_issue theme so Phase 7 selects the existing
+    interface template - not generic_investigation."""
+    incident = _lab_incident(db_session)
+    _attach(
+        db_session,
+        incident,
+        event_type="lab_interface_status",
+        payload={
+            "router": "edge-1",
+            "interface": "Gi0/2",
+            "admin_status": "up",
+            "oper_status": "down",
+            "line_protocol": "is down",
+            "input_errors": 0,
+            "output_errors": 0,
+            "down": True,
+            "has_errors": False,
+            "_origin": "lab-collector",
+        },
+    )
+    findings = analyze_incident(db_session, incident.id)
+    link = [f for f in findings if f.rule_name == "link_down_detected"]
+    assert len(link) == 1
+    assert link[0].rule_id == "R008"
+    assert "Gi0/2" in link[0].summary
+    assert "down" in link[0].summary.lower()
+
+
+def test_healthy_lab_interface_event_produces_no_finding(
+    db_session: Session,
+) -> None:
+    """Negative pin: an `up` lab interface with zero errors must NOT trip
+    any rule. Otherwise the umbrella snapshot would spam findings for
+    every healthy interface in the lab."""
+    incident = _lab_incident(db_session)
+    _attach(
+        db_session,
+        incident,
+        event_type="lab_interface_status",
+        payload={
+            "router": "edge-1",
+            "interface": "Gi0/3",
+            "admin_status": "up",
+            "oper_status": "up",
+            "line_protocol": "is up",
+            "input_errors": 0,
+            "output_errors": 0,
+            "down": False,
+            "has_errors": False,
+            "_origin": "lab-collector",
+        },
+    )
+    findings = analyze_incident(db_session, incident.id)
+    assert findings == []
+
+
+def test_simulator_bgp_summary_text_preserved_after_phase21c() -> None:
+    """Belt-and-suspenders: the existing simulator BGP path keeps its
+    original `'transitioned to Idle'` summary text BYTE-FOR-BYTE. Phase
+    21C added a lab-shape summary for `lab_bgp_peer_not_established`
+    events but must NOT have changed wording for `bgp_state_change`
+    events - existing RCA output, screenshots, and downstream consumers
+    expect the original phrasing."""
+    from app.anomaly.rules import rule_bgp_neighbor_down
+    from uuid import uuid4 as _uuid4
+
+    class _Incident:  # minimal duck-typed stand-in
+        id = _uuid4()
+        incident_type = "bgp_neighbor_down"
+
+    class _Event:
+        id = _uuid4()
+        event_type = "bgp_state_change"
+        payload = {"device": "core-1", "neighbor": "10.0.0.21", "after": "Idle"}
+
+    findings = rule_bgp_neighbor_down(_Incident(), [_Event()], [])  # type: ignore[arg-type]
+    assert len(findings) == 1
+    summary = findings[0].summary
+    # The exact pre-Phase-21C wording must still be there. If a future
+    # refactor reworded this, downstream RCA / snapshots / docs would
+    # silently drift; this assertion makes that fail loudly.
+    assert "transitioned to Idle" in summary
+    assert "core-1" in summary
+    assert "10.0.0.21" in summary  # `neighbor` payload key
+    # And the new lab-only phrasing must NOT have leaked into the
+    # simulator path.
+    assert "is not Established" not in summary
+
+
+def test_lab_bgp_summary_uses_lab_specific_phrasing() -> None:
+    """Companion pin: the lab event path uses `is not Established`
+    (because lab state may be Active/Connect/etc., not only Idle).
+    Splits cleanly from the simulator path so future regressions in
+    either direction fail loudly."""
+    from app.anomaly.rules import rule_bgp_neighbor_down
+    from uuid import uuid4 as _uuid4
+
+    class _Incident:
+        id = _uuid4()
+        incident_type = "lab_full_snapshot"
+
+    class _LabEvent:
+        id = _uuid4()
+        event_type = "lab_bgp_peer_not_established"
+        payload = {
+            "router": "edge-1",
+            "peer": "172.30.1.2",
+            "state": "Active",  # not Idle - lab can land here
+            "_origin": "lab-collector",
+        }
+
+    findings = rule_bgp_neighbor_down(_Incident(), [_LabEvent()], [])  # type: ignore[arg-type]
+    assert len(findings) == 1
+    summary = findings[0].summary
+    assert "is not Established" in summary
+    # And the simulator phrasing must NOT have leaked into the lab path.
+    assert "transitioned to Idle" not in summary

@@ -31,6 +31,10 @@ _THEME_MAP: dict[str, str] = {
     "route_withdrawal_detected": "routing_failure",
     "route_missing_detected": "routing_failure",
     "interface_error_spike_detected": "interface_physical_issue",
+    # Phase 21C: lab-only link-down finding routes through the same
+    # interface_physical_issue theme so Phase 7's pick_template lands on
+    # the existing interface template instead of generic_investigation.
+    "link_down_detected": "interface_physical_issue",
     "latency_spike_detected": "latency_or_loss",
     "packet_loss_detected": "latency_or_loss",
     "acl_deny_spike_detected": "policy_block",

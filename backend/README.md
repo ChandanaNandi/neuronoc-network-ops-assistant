@@ -101,7 +101,9 @@ End-to-end smoke walk-through that proves the Phase 21A collector feeds the exis
 
 End-to-end pinned by `tests/test_lab_collector.py::test_phase21b_lab_snapshot_feeds_full_workflow_end_to_end`, which runs collector → Phase 5 → Phase 6 (forced deterministic fallback) → Phase 7 with a fake docker-exec runner.
 
-**Boundary note**: the lab event types (`lab_bgp_peer_not_established`, `lab_interface_status`) do not yet match the existing Phase 4 anomaly rules (which look for simulator-shaped event_type strings like `bgp_state_change`). The chain runs to completion regardless and produces a valid plan from the generic-investigation template; mapping lab events into the anomaly engine's rule set is a future-phase candidate (Phase 21C+).
+**Phase 21C upgrade**: lab snapshot events now feed the existing Phase 4 anomaly rules. The collector's `lab_bgp_peer_not_established` events trigger `bgp_neighbor_down_detected` (R001); `lab_interface_status` events with `payload.has_errors=true` trigger `interface_error_spike_detected` (R003); `lab_interface_status` with `payload.down=true` triggers the new `link_down_detected` (R008). All three route through the existing theme map → Phase 7 selects a **specific** template (`template_bgp_neighbor_down` / `template_interface_errors_spike`) instead of the generic-investigation fallback. The Phase 21B end-to-end test pins this: `plan.plan_type != "generic_investigation"`.
+
+**Remaining boundary**: route-table-sample and syslog-sample collectors aren't built yet, so `route_missing_detected` and `acl_deny_spike_detected` rules still only fire from simulator-shaped events. Adding those collector outputs (and their rule-mapping extensions) is a future candidate.
 
 ## Simulator
 

@@ -1110,14 +1110,41 @@ def test_phase21b_lab_snapshot_feeds_full_workflow_end_to_end(
     plan = build_remediation_plan(db_session, summary.incident_id)
     assert plan.incident_id == summary.incident_id
     assert plan.title  # non-empty
-    assert plan.plan_type  # non-empty (likely `generic_investigation`
-    #   today since `lab_full_snapshot` isn't in the template registry;
-    #   asserting non-empty keeps the test stable across template changes)
-    # **Plan-only contract pinned**: a plan produced by THIS chain must
+    # **Phase 21C upgrade**: lab events now feed the existing anomaly
+    # rules, so a fault scenario produces specific findings (BGP +
+    # interface). The Phase 5 workflow's _THEME_MAP routes those onto
+    # `routing_failure` + `interface_physical_issue` themes; Phase 7's
+    # pick_template iterates themes in sorted order and lands on
+    # `template_interface_errors_spike` first (plan_type
+    # `interface_physical_investigation`). The critical pin is that the
+    # plan is no longer `generic_investigation` - a specific template
+    # fired off real lab data.
+    assert plan.plan_type != "generic_investigation"
+
+    # Plan-only contract pinned: a plan produced by THIS chain must
     # still require human approval before any imaginary execution path
-    # could touch a device. Phase 21B does NOT introduce remediation
+    # could touch a device. Phase 21B/21C do NOT introduce remediation
     # execution.
     assert plan.requires_approval is True
+
+    # **Phase 21C upgrade**: the lab events now actually produce
+    # anomaly findings via the extended rule_bgp_neighbor_down +
+    # rule_interface_error_spike + rule_link_down. Pin a non-zero count
+    # via a direct analyze_incident() call so a regression that loses
+    # the lab mappings would fail here too.
+    from app.anomaly.engine import analyze_incident
+    direct_findings = analyze_incident(db_session, summary.incident_id)
+    assert len(direct_findings) >= 1
+    finding_names = {f.rule_name for f in direct_findings}
+    # At least one of the two specific-rule signals is present (the
+    # fault scenario has both not-Established BGP + interface errors,
+    # but pinning ANY-of keeps the test resilient if a future rule
+    # rewrite consolidates them).
+    assert finding_names & {
+        "bgp_neighbor_down_detected",
+        "interface_error_spike_detected",
+        "link_down_detected",
+    }
 
     # Confirm exactly one AgentRun was created end-to-end (proves the
     # planner reused the existing run rather than triggering a second).
