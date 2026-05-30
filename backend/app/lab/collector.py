@@ -68,6 +68,29 @@ _FORBIDDEN_VTYSH_TOKENS: frozenset[str] = frozenset(
 # each; 64 KB leaves a lot of headroom while still bounded.
 _RUNNING_CONFIG_MAX_BYTES = 64 * 1024
 
+# Phase 21E: route-table snapshots are also bounded evidence. FRR's
+# `show ip route json` for the four-router lab is small, but keep the
+# same 64 KB cap as running-config so the umbrella collector remains
+# predictable even if the lab grows.
+_ROUTE_TABLE_MAX_BYTES = 64 * 1024
+
+# Phase 21E: deterministic expected BGP loopbacks for the Phase 8B topology.
+# Each router should learn the other three loopbacks via BGP.
+LAB_LOOPBACKS: dict[str, str] = {
+    "edge-1": "10.0.0.11/32",
+    "edge-2": "10.0.0.12/32",
+    "core-1": "10.0.0.21/32",
+    "branch-1": "10.0.0.31/32",
+}
+EXPECTED_BGP_LOOPBACKS_FOR: dict[str, list[str]] = {
+    router: [
+        prefix
+        for other, prefix in LAB_LOOPBACKS.items()
+        if other != router
+    ]
+    for router in LAB_ROUTERS
+}
+
 
 def _assert_known_router(router: str) -> None:
     """Reject any router name that isn't in the Phase 8B lab allow-list.
@@ -364,6 +387,130 @@ def _scrape_running_config(runner: CommandRunner, router: str) -> ConfigScrape:
     )
 
 
+@dataclass(frozen=True)
+class RouteTableScrape:
+    router: str
+    parsed: dict | None
+    content: str | None  # JSON text, capped at _ROUTE_TABLE_MAX_BYTES
+    truncated: bool
+    raw_byte_count: int
+    bgp_route_count: int
+    connected_route_count: int
+    total_route_count: int
+    expected_bgp_loopbacks: list[str]
+    present_bgp_loopbacks: list[str]
+    missing_bgp_loopbacks: list[str]
+    error: str | None
+
+
+def _route_entries(route_table: dict) -> dict[str, list[dict]]:
+    """Extract prefix -> entries from FRR `show ip route json`.
+
+    FRR's route JSON is normally a top-level dict keyed by prefix, where
+    each value is a list of route entries. This helper is intentionally
+    conservative: it only treats top-level keys containing `/` as route
+    prefixes, and ignores unfamiliar shapes rather than guessing.
+    """
+    entries: dict[str, list[dict]] = {}
+    for prefix, raw_entries in route_table.items():
+        if not isinstance(prefix, str) or "/" not in prefix:
+            continue
+        if isinstance(raw_entries, list):
+            entries[prefix] = [
+                e for e in raw_entries if isinstance(e, dict)
+            ]
+        elif isinstance(raw_entries, dict):
+            entries[prefix] = [raw_entries]
+        else:
+            entries[prefix] = []
+    return entries
+
+
+def _route_protocol(entry: dict) -> str:
+    raw = (
+        entry.get("protocol")
+        or entry.get("type")
+        or entry.get("routeType")
+        or entry.get("route_type")
+        or ""
+    )
+    value = str(raw).lower()
+    if value in {"b", "bgp"}:
+        return "bgp"
+    if value in {"c", "connected"}:
+        return "connected"
+    return value
+
+
+def _route_has_protocol(entries: list[dict], protocol: str) -> bool:
+    return any(_route_protocol(entry) == protocol for entry in entries)
+
+
+def _cap_text(text: str, max_bytes: int) -> tuple[str, bool, int]:
+    raw_bytes = text.encode("utf-8")
+    if len(raw_bytes) <= max_bytes:
+        return text, False, len(raw_bytes)
+    return (
+        raw_bytes[:max_bytes].decode("utf-8", errors="replace"),
+        True,
+        len(raw_bytes),
+    )
+
+
+def _scrape_route_table(runner: CommandRunner, router: str) -> RouteTableScrape:
+    """`show ip route json` -> bounded evidence + missing-loopback summary."""
+    parsed, err = _vtysh_json(runner, router, "show ip route json")
+    expected = list(EXPECTED_BGP_LOOPBACKS_FOR[router])
+    if err is not None:
+        return RouteTableScrape(
+            router=router,
+            parsed=None,
+            content=None,
+            truncated=False,
+            raw_byte_count=0,
+            bgp_route_count=0,
+            connected_route_count=0,
+            total_route_count=0,
+            expected_bgp_loopbacks=expected,
+            present_bgp_loopbacks=[],
+            missing_bgp_loopbacks=expected,
+            error=err,
+        )
+    if not isinstance(parsed, dict):
+        parsed = {}
+    entries_by_prefix = _route_entries(parsed)
+    bgp_prefixes = {
+        prefix
+        for prefix, entries in entries_by_prefix.items()
+        if _route_has_protocol(entries, "bgp")
+    }
+    connected_prefixes = {
+        prefix
+        for prefix, entries in entries_by_prefix.items()
+        if _route_has_protocol(entries, "connected")
+    }
+    present = [prefix for prefix in expected if prefix in bgp_prefixes]
+    missing = [prefix for prefix in expected if prefix not in bgp_prefixes]
+    rendered = json.dumps(parsed, indent=2, sort_keys=True)
+    content, truncated, raw_byte_count = _cap_text(
+        rendered, _ROUTE_TABLE_MAX_BYTES
+    )
+    return RouteTableScrape(
+        router=router,
+        parsed=parsed,
+        content=content,
+        truncated=truncated,
+        raw_byte_count=raw_byte_count,
+        bgp_route_count=len(bgp_prefixes),
+        connected_route_count=len(connected_prefixes),
+        total_route_count=len(entries_by_prefix),
+        expected_bgp_loopbacks=expected,
+        present_bgp_loopbacks=present,
+        missing_bgp_loopbacks=missing,
+        error=None,
+    )
+
+
 # ---------- Phase 21A umbrella snapshot summary ----------
 
 
@@ -386,6 +533,8 @@ class LabSnapshotSummary(BaseModel):
     interfaces_with_errors: int
     interfaces_down: int
     configs_collected: int
+    routes_collected: int
+    routes_missing: int
     events_created: int
     evidence_created: int
     errors: list[str] = Field(default_factory=list)
@@ -582,15 +731,18 @@ def collect_lab_snapshot(
     - BGP events (`lab_bgp_peer_established` / `lab_bgp_peer_not_established`
       / `lab_bgp_prefix_snapshot`) - same shape as the Phase 8C collector
     - Interface events (`lab_interface_status`) - one per interface
+    - Route-table events (`lab_route_table_snapshot` / `lab_route_missing`)
+      plus bounded route-table evidence
     - Running-config evidence (`running_config_snapshot`) - one per router
     - Per-scrape collection-error events when any vtysh call fails:
       `lab_bgp_collection_error`, `lab_interface_collection_error`,
-      `lab_config_collection_error`
+      `lab_route_collection_error`, `lab_config_collection_error`
 
     Severity escalation:
     - low: every peer Established, every interface up + zero errors,
       every config retrieved
     - medium: any peer not Established OR any interface with errors > 0
+      OR any expected lab loopback missing from a BGP route table
     - high: any per-scrape failure OR any interface admin/oper down
 
     Read-only. Plan-only. Does NOT contact anything outside the local
@@ -614,6 +766,8 @@ def collect_lab_snapshot(
     interfaces_with_errors = 0
     interfaces_down = 0
     configs_collected = 0
+    routes_collected = 0
+    routes_missing = 0
     any_scrape_failed = False
 
     for router in target_routers:
@@ -757,6 +911,101 @@ def collect_lab_snapshot(
                     }
                 )
 
+        # ---- Routes (evidence + missing-prefix events) ----
+        route_scrape = _scrape_route_table(cmd_runner, router)
+        if route_scrape.error is not None:
+            errors.append(f"{router} routes: {route_scrape.error}")
+            any_scrape_failed = True
+            pending_events.append(
+                {
+                    "event_type": "lab_route_collection_error",
+                    "source": f"lab:{router}",
+                    "message": (
+                        f"Failed to scrape route table on {router}: "
+                        f"{route_scrape.error}"
+                    ),
+                    "payload": {
+                        "router": router,
+                        "error": route_scrape.error,
+                        "_origin": "lab-collector",
+                    },
+                }
+            )
+        else:
+            assert route_scrape.content is not None
+            routes_collected += 1
+            routes_missing += len(route_scrape.missing_bgp_loopbacks)
+            pending_events.append(
+                {
+                    "event_type": "lab_route_table_snapshot",
+                    "source": f"lab:{router}",
+                    "message": (
+                        f"{router}: total_routes={route_scrape.total_route_count} "
+                        f"bgp_routes={route_scrape.bgp_route_count} "
+                        f"connected_routes={route_scrape.connected_route_count} "
+                        f"missing_bgp_loopbacks="
+                        f"{len(route_scrape.missing_bgp_loopbacks)}"
+                    ),
+                    "payload": {
+                        "router": router,
+                        "total_route_count": route_scrape.total_route_count,
+                        "bgp_route_count": route_scrape.bgp_route_count,
+                        "connected_route_count": (
+                            route_scrape.connected_route_count
+                        ),
+                        "expected_bgp_loopbacks": (
+                            route_scrape.expected_bgp_loopbacks
+                        ),
+                        "present_bgp_loopbacks": (
+                            route_scrape.present_bgp_loopbacks
+                        ),
+                        "missing_bgp_loopbacks": (
+                            route_scrape.missing_bgp_loopbacks
+                        ),
+                        "_origin": "lab-collector",
+                    },
+                }
+            )
+            for prefix in route_scrape.missing_bgp_loopbacks:
+                pending_events.append(
+                    {
+                        "event_type": "lab_route_missing",
+                        "source": f"lab:{router}",
+                        "message": (
+                            f"{router}: expected BGP loopback {prefix} "
+                            "is missing from the route table"
+                        ),
+                        "payload": {
+                            "router": router,
+                            "prefix": prefix,
+                            "expected_protocol": "bgp",
+                            "_origin": "lab-collector",
+                        },
+                    }
+                )
+            pending_evidence.append(
+                {
+                    "evidence_type": "route_table_snapshot",
+                    "source": f"lab:{router}",
+                    "content": route_scrape.content,
+                    "payload": {
+                        "router": router,
+                        "truncated": route_scrape.truncated,
+                        "byte_count": route_scrape.raw_byte_count,
+                        "max_bytes": _ROUTE_TABLE_MAX_BYTES,
+                        "total_route_count": route_scrape.total_route_count,
+                        "bgp_route_count": route_scrape.bgp_route_count,
+                        "connected_route_count": (
+                            route_scrape.connected_route_count
+                        ),
+                        "missing_bgp_loopbacks": (
+                            route_scrape.missing_bgp_loopbacks
+                        ),
+                        "_origin": "lab-collector",
+                    },
+                }
+            )
+
         # ---- Running-config (evidence) ----
         cfg = _scrape_running_config(cmd_runner, router)
         if cfg.error is not None:
@@ -794,17 +1043,19 @@ def collect_lab_snapshot(
                 }
             )
 
-        # If BGP scrape failed but we somehow still counted the router via
-        # an interface success, account for that here so routers_seen is
-        # never under-reported by the BGP-only success path.
+        # If BGP scrape failed but we still reached the router through another
+        # scrape, account for that here so routers_seen is never under-reported
+        # by the BGP-only success path.
         if not router_id_observed and (
-            (observations is not None and observations) or cfg.error is None
+            (observations is not None and observations)
+            or route_scrape.error is None
+            or cfg.error is None
         ):
             routers_seen += 1
 
     # ---- Severity ----
     severity = "low"
-    if non_established > 0 or interfaces_with_errors > 0:
+    if non_established > 0 or interfaces_with_errors > 0 or routes_missing > 0:
         severity = "medium"
     if any_scrape_failed or interfaces_down > 0:
         severity = "high"
@@ -822,6 +1073,8 @@ def collect_lab_snapshot(
             title_state_parts.append(
                 f"{interfaces_with_errors} interface(s) with errors"
             )
+        if routes_missing:
+            title_state_parts.append(f"{routes_missing} route(s) missing")
         if errors:
             title_state_parts.append(f"{len(errors)} scrape error(s)")
         title_state = (
@@ -833,12 +1086,15 @@ def collect_lab_snapshot(
         severity=severity,
         incident_type=LAB_FULL_SNAPSHOT_INCIDENT_TYPE,
         summary=(
-            f"{LAB_MARKER} One-shot lab snapshot (BGP + interfaces + config). "
+            f"{LAB_MARKER} One-shot lab snapshot "
+            f"(BGP + interfaces + routes + config). "
             f"routers_seen={routers_seen} peers_seen={peers_seen} "
             f"established={established} non_established={non_established} "
             f"interfaces_seen={interfaces_seen} "
             f"interfaces_down={interfaces_down} "
             f"interfaces_with_errors={interfaces_with_errors} "
+            f"routes_collected={routes_collected} "
+            f"routes_missing={routes_missing} "
             f"configs_collected={configs_collected} "
             f"errors={len(errors)}."
         ),
@@ -864,6 +1120,8 @@ def collect_lab_snapshot(
         interfaces_with_errors=interfaces_with_errors,
         interfaces_down=interfaces_down,
         configs_collected=configs_collected,
+        routes_collected=routes_collected,
+        routes_missing=routes_missing,
         events_created=len(pending_events),
         evidence_created=len(pending_evidence),
         errors=errors,
@@ -900,8 +1158,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--collect-snapshot",
         action="store_true",
         help=(
-            "Run a single full lab snapshot (BGP + interfaces + running-config) "
-            "and exit (Phase 21A)."
+            "Run a single full lab snapshot (BGP + interfaces + routes + "
+            "running-config) and exit (Phase 21A/21E)."
         ),
     )
     mode.add_argument(

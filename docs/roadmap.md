@@ -388,7 +388,7 @@ Conventions:
 - README "Demo path" section updated: lab events now feed anomaly findings; remaining gap (route-table-sample + syslog-sample collectors not built yet) honestly documented.
 - Same guardrails as every prior phase — no new dependency, no schema migration, no external device contact (rule tests use direct event-payload fixtures, no docker), no remediation execution, no LLM behavior change, no Netmiko / pyATS / NAPALM / Paramiko, no frontend code change.
 
-## Phase 21D — Lab fault-injection helper (demo ergonomics) *(current)*
+## Phase 21D — Lab fault-injection helper (demo ergonomics) ✓
 
 - **Shell + docs + smoke test only — NO backend, frontend, dependency, or schema changes.** Makes the recruiter-demo flow one command per scenario instead of remembering raw `docker stop` / `vtysh ... shutdown` recipes.
 - Top-level verbs (per user direction; **not** `inject heal ...`):
@@ -404,6 +404,21 @@ Conventions:
 - **33-assertion smoke** in `infra/lab/scripts/test_lab.sh`. Runs in <1 s with **no docker daemon required** — half are argument-validation (unknown fault type, missing args, unknown router, usage text mentions the new subcommands, etc.) and half are fake-docker capture assertions: a stub `docker` script first on PATH captures every `docker exec` argv and the test asserts the exact vtysh / `ip link` command-string lab.sh emits per fault. Critically, this catches FRR-syntax drift — the suite has explicit pins that inject emits `neighbor X shutdown` and heal emits `no neighbor X shutdown` (NOT the syntactically-invalid `neighbor X no shutdown`). Actual fault mechanics against a live lab are documented as a manual validation recipe in `infra/lab/README.md` because the lab takes ~25-30 s per `up`/heal-converge cycle, too slow for CI.
 - Files (5): `infra/lab/scripts/lab.sh` (modified), `infra/lab/scripts/test_lab.sh` (new, executable), `infra/lab/README.md` (modified — fault matrix, canonical-peer map, manual validation recipe, deferred-`iface-errors` rationale), `backend/README.md` (modified — cross-reference in Demo path so `docker stop` no longer appears as the inject step), `docs/roadmap.md` (modified).
 - Same guardrails as every prior phase — lab-only (no host packet tricks, no privileged kernel knobs, no arbitrary container targeting), no new dependency, no schema, no migration, no backend/frontend code change, no remediation execution, no LLM behavior change.
+
+## Phase 21E — Lab route-table snapshots *(current)*
+
+- **Backend collector + rule tests + docs only.** Extends the Phase 21A umbrella snapshot with `show ip route json` per router. No frontend, no dependency, no schema migration, no template-priority change, no syslog.
+- New lab-topology-scoped expected loopback table: each router expects the other three routers' loopback `/32`s via BGP (`edge-1→10.0.0.12/32,10.0.0.21/32,10.0.0.31/32`, etc.). This mirrors Phase 21D's canonical-peer map: small, explicit, and tied to the frozen Phase 8B FRR topology.
+- Per healthy router, collector writes:
+  - one `lab_route_table_snapshot` event with `total_route_count`, `bgp_route_count`, `connected_route_count`, `expected_bgp_loopbacks`, `present_bgp_loopbacks`, and `missing_bgp_loopbacks`;
+  - one bounded `route_table_snapshot` evidence row containing the rendered `show ip route json` payload, capped at 64 KB with `truncated`, `byte_count`, and `max_bytes` metadata.
+- Per missing expected loopback, collector writes one `lab_route_missing` event with `{router, prefix, expected_protocol="bgp", _origin="lab-collector"}`. Missing routes lift snapshot severity to `medium`; route scrape failure writes `lab_route_collection_error` and lifts severity to `high`.
+- `LabSnapshotSummary` is additively extended with `routes_collected` and `routes_missing`. Existing fields remain unchanged; BGP-only `POST /api/lab/collect/bgp` response shape is still pinned separately.
+- `rule_route_missing` (R007) now also matches `lab_route_missing`, reusing the existing `route_missing_detected` finding and downstream `routing_failure` theme/template behavior.
+- Focused tests added: healthy route tables emit no missing routes, one missing expected loopback emits one `lab_route_missing` and medium severity, route scrape failure emits `lab_route_collection_error` and high severity, route-table evidence rows are written per healthy router, expected-loopback topology is pinned, and `lab_route_missing` produces R007.
+- **Syslog deliberately deferred.** The FRR lab logs to stdout, so `docker logs --tail N` is mechanically possible, but it does not close an ACL-deny/packet-loss/latency rule gap and would add a second collection surface with weak signal. A future firewall or traffic component should introduce those signals instead.
+- Real-lab rule coverage after 21E: covered from lab data: R001 `bgp_neighbor_down_detected`, R003 `interface_error_spike_detected` via collector payload, R007 `route_missing_detected`, R008 `link_down_detected`. Simulator-only / no lab signal: R002 `route_withdrawal_detected`, R004 `packet_loss_detected`, R005 `latency_spike_detected`, R006 `acl_deny_spike_detected`.
+- Same guardrails as every prior lab phase — read-only `show *` commands only, known-router allow-list, forbidden-token command guard, no external device targeting, no remediation execution, no LLM behavior change.
 
 ## Beyond
 

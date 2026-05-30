@@ -390,7 +390,11 @@ def rule_route_missing(
     events: list[IncidentEvent],
     evidence: list[IncidentEvidence],
 ) -> list[AnomalyFinding]:
-    event_matches = [e for e in events if e.event_type == "route_missing"]
+    event_matches = [
+        e
+        for e in events
+        if e.event_type in {"route_missing", "lab_route_missing"}
+    ]
     evidence_matches = [v for v in evidence if _payload(v).get("result") == "not_in_table"]
     if not event_matches and not evidence_matches:
         return []

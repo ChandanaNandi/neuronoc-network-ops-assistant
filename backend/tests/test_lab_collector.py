@@ -539,7 +539,9 @@ def test_collect_single_shot_unchanged_after_cli_restructure(
 
 
 from app.lab.collector import (  # noqa: E402 - test-section import
+    EXPECTED_BGP_LOOPBACKS_FOR,
     LAB_FULL_SNAPSHOT_INCIDENT_TYPE,
+    LAB_LOOPBACKS,
     _assert_known_router,
     _assert_show_command,
     collect_lab_snapshot,
@@ -645,19 +647,38 @@ def _interface_json(*, ifname: str, admin: str = "up", oper: str = "up",
     }
 
 
+def _route_json(router: str, *, missing: set[str] | None = None) -> dict:
+    missing_prefixes = missing or set()
+    routes: dict[str, list[dict]] = {
+        LAB_LOOPBACKS[router]: [{"protocol": "connected"}],
+    }
+    for prefix in EXPECTED_BGP_LOOPBACKS_FOR[router]:
+        if prefix not in missing_prefixes:
+            routes[prefix] = [{"protocol": "bgp", "selected": True}]
+    return routes
+
+
+def _healthy_routes() -> dict[str, dict]:
+    return {r: _route_json(r) for r in ("edge-1", "edge-2", "core-1", "branch-1")}
+
+
 def _snapshot_runner(
     *,
     bgp_summary: dict[str, dict | None],
     interfaces: dict[str, dict | None],
     configs: dict[str, str | None],
+    routes: dict[str, dict | None] | None = None,
     fail_bgp: set[str] | None = None,
     fail_interfaces: set[str] | None = None,
     fail_config: set[str] | None = None,
+    fail_routes: set[str] | None = None,
 ) -> Callable:
     """Dispatcher fake. Routes by the vtysh command embedded at cmd[5]."""
     fb = fail_bgp or set()
     fi = fail_interfaces or set()
     fc = fail_config or set()
+    fr = fail_routes or set()
+    route_payloads = routes if routes is not None else _healthy_routes()
 
     def _runner(cmd: list[str]) -> tuple[str, str, int]:
         router = _router_from_cmd(cmd)
@@ -671,6 +692,11 @@ def _snapshot_runner(
             if router in fi:
                 return "", "container not running", 1
             body = interfaces.get(router)
+            return (json.dumps(body) if body is not None else "not json"), "", 0
+        if vtysh_cmd.startswith("show ip route"):
+            if router in fr:
+                return "", "route table unavailable", 1
+            body = route_payloads.get(router)
             return (json.dumps(body) if body is not None else "not json"), "", 0
         if vtysh_cmd.startswith("show running-config"):
             if router in fc:
@@ -733,6 +759,8 @@ def test_snapshot_all_healthy_creates_low_severity_incident(
     assert summary.interfaces_down == 0
     assert summary.interfaces_with_errors == 0
     assert summary.configs_collected == 4
+    assert summary.routes_collected == 4
+    assert summary.routes_missing == 0
     assert summary.errors == []
 
     incident = db_session.get(Incident, summary.incident_id)
@@ -752,10 +780,12 @@ def test_snapshot_writes_per_router_running_config_evidence(
     evidence = db_session.scalars(
         select(IncidentEvidence).where(
             IncidentEvidence.incident_id == summary.incident_id
+        ).where(
+            IncidentEvidence.evidence_type == "running_config_snapshot"
         )
     ).all()
     assert len(evidence) == 4
-    assert summary.evidence_created == 4
+    assert summary.evidence_created == 8
     for e in evidence:
         assert e.evidence_type == "running_config_snapshot"
         assert e.source.startswith("lab:")
@@ -903,6 +933,7 @@ def test_snapshot_oversize_config_is_truncated(db_session: Session) -> None:
         select(IncidentEvidence)
         .where(IncidentEvidence.incident_id == summary.incident_id)
         .where(IncidentEvidence.source == "lab:edge-1")
+        .where(IncidentEvidence.evidence_type == "running_config_snapshot")
     ).all()
     assert len(evidence) == 1
     ev = evidence[0]
@@ -911,6 +942,139 @@ def test_snapshot_oversize_config_is_truncated(db_session: Session) -> None:
     assert ev.payload["byte_count"] == 100 * 1024
     # Content is capped at the byte limit (decoding ASCII so byte == char).
     assert len(ev.content) == 64 * 1024
+
+
+# ---------- Phase 21E: route table snapshots ----------
+
+
+def test_route_table_all_healthy_emits_no_missing_routes(
+    db_session: Session,
+) -> None:
+    summary = collect_lab_snapshot(
+        db_session, runner=_all_healthy_snapshot_runner()
+    )
+    assert summary.routes_collected == 4
+    assert summary.routes_missing == 0
+
+    route_missing_events = db_session.scalars(
+        select(IncidentEvent)
+        .where(IncidentEvent.incident_id == summary.incident_id)
+        .where(IncidentEvent.event_type == "lab_route_missing")
+    ).all()
+    assert route_missing_events == []
+
+    incident = db_session.get(Incident, summary.incident_id)
+    assert incident is not None
+    assert incident.severity == "low"
+
+
+def test_route_table_missing_prefix_emits_lab_route_missing(
+    db_session: Session,
+) -> None:
+    missing = "10.0.0.31/32"
+    routes = _healthy_routes()
+    routes["edge-1"] = _route_json("edge-1", missing={missing})
+    runner = _snapshot_runner(
+        bgp_summary={
+            r: _summary_for(r, peers={})
+            for r in ("edge-1", "edge-2", "core-1", "branch-1")
+        },
+        interfaces={
+            r: _interface_json(ifname="eth0")
+            for r in ("edge-1", "edge-2", "core-1", "branch-1")
+        },
+        configs={
+            r: f"hostname {r}\n"
+            for r in ("edge-1", "edge-2", "core-1", "branch-1")
+        },
+        routes=routes,
+    )
+
+    summary = collect_lab_snapshot(db_session, runner=runner)
+    assert summary.routes_collected == 4
+    assert summary.routes_missing == 1
+    incident = db_session.get(Incident, summary.incident_id)
+    assert incident is not None
+    assert incident.severity == "medium"
+
+    route_missing_events = db_session.scalars(
+        select(IncidentEvent)
+        .where(IncidentEvent.incident_id == summary.incident_id)
+        .where(IncidentEvent.event_type == "lab_route_missing")
+    ).all()
+    assert len(route_missing_events) == 1
+    assert route_missing_events[0].payload is not None
+    assert route_missing_events[0].payload["router"] == "edge-1"
+    assert route_missing_events[0].payload["prefix"] == missing
+    assert route_missing_events[0].payload["expected_protocol"] == "bgp"
+
+
+def test_route_table_failure_lifts_to_high_with_error_event(
+    db_session: Session,
+) -> None:
+    runner = _snapshot_runner(
+        bgp_summary={
+            r: _summary_for(r, peers={})
+            for r in ("edge-1", "edge-2", "core-1", "branch-1")
+        },
+        interfaces={
+            r: _interface_json(ifname="eth0")
+            for r in ("edge-1", "edge-2", "core-1", "branch-1")
+        },
+        configs={
+            r: f"hostname {r}\n"
+            for r in ("edge-1", "edge-2", "core-1", "branch-1")
+        },
+        fail_routes={"edge-1"},
+    )
+
+    summary = collect_lab_snapshot(db_session, runner=runner)
+    assert summary.routes_collected == 3
+    assert any("edge-1 routes:" in e for e in summary.errors)
+    incident = db_session.get(Incident, summary.incident_id)
+    assert incident is not None
+    assert incident.severity == "high"
+
+    error_events = db_session.scalars(
+        select(IncidentEvent)
+        .where(IncidentEvent.incident_id == summary.incident_id)
+        .where(IncidentEvent.event_type == "lab_route_collection_error")
+    ).all()
+    assert len(error_events) == 1
+
+
+def test_route_table_evidence_row_written_per_healthy_router(
+    db_session: Session,
+) -> None:
+    summary = collect_lab_snapshot(
+        db_session, runner=_all_healthy_snapshot_runner()
+    )
+    route_evidence = db_session.scalars(
+        select(IncidentEvidence)
+        .where(IncidentEvidence.incident_id == summary.incident_id)
+        .where(IncidentEvidence.evidence_type == "route_table_snapshot")
+    ).all()
+    assert len(route_evidence) == 4
+    for ev in route_evidence:
+        assert ev.source.startswith("lab:")
+        assert "10.0.0." in ev.content
+        assert ev.payload is not None
+        assert ev.payload["_origin"] == "lab-collector"
+        assert ev.payload["truncated"] is False
+        assert ev.payload["max_bytes"] == 64 * 1024
+
+
+def test_route_table_topology_pin() -> None:
+    assert set(EXPECTED_BGP_LOOPBACKS_FOR) == set(LAB_ROUTERS)
+    assert set(LAB_LOOPBACKS) == set(LAB_ROUTERS)
+    for router in LAB_ROUTERS:
+        expected = set(EXPECTED_BGP_LOOPBACKS_FOR[router])
+        assert expected == {
+            prefix
+            for other, prefix in LAB_LOOPBACKS.items()
+            if other != router
+        }
+        assert LAB_LOOPBACKS[router] not in expected
 
 
 # ---------- API + CLI ----------
@@ -931,7 +1095,9 @@ def test_api_collect_snapshot_returns_201_and_summary(
     body = response.json()
     assert body["routers_seen"] == 4
     assert body["configs_collected"] == 4
-    assert body["evidence_created"] == 4
+    assert body["routes_collected"] == 4
+    assert body["routes_missing"] == 0
+    assert body["evidence_created"] == 8
 
 
 def test_api_collect_bgp_unchanged_by_phase21a(
@@ -971,7 +1137,9 @@ def test_cli_collect_snapshot_prints_full_summary(
     parsed = json.loads(capsys.readouterr().out)
     assert parsed["routers_seen"] == 4
     assert parsed["configs_collected"] == 4
-    assert parsed["evidence_created"] == 4
+    assert parsed["routes_collected"] == 4
+    assert parsed["routes_missing"] == 0
+    assert parsed["evidence_created"] == 8
 
 
 # ============================================================

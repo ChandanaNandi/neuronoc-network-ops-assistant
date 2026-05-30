@@ -410,3 +410,30 @@ def test_lab_bgp_summary_uses_lab_specific_phrasing() -> None:
     assert "is not Established" in summary
     # And the simulator phrasing must NOT have leaked into the lab path.
     assert "transitioned to Idle" not in summary
+
+
+def test_lab_route_missing_event_produces_route_missing_finding(
+    db_session: Session,
+) -> None:
+    """Phase 21E: lab_route_missing events flow through the existing R007
+    route_missing rule. This keeps downstream routing_failure theme/template
+    behavior shared with simulator-shaped route_missing events."""
+    incident = _lab_incident(db_session)
+    _attach(
+        db_session,
+        incident,
+        event_type="lab_route_missing",
+        payload={
+            "router": "edge-1",
+            "prefix": "10.0.0.31/32",
+            "expected_protocol": "bgp",
+            "_origin": "lab-collector",
+        },
+    )
+
+    findings = analyze_incident(db_session, incident.id)
+    route = [f for f in findings if f.rule_name == "route_missing_detected"]
+    assert len(route) == 1
+    assert route[0].rule_id == "R007"
+    assert "edge-1" in route[0].summary
+    assert "10.0.0.31/32" in route[0].summary
