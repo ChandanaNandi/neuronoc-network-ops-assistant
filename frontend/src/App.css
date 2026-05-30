@@ -562,6 +562,74 @@
   margin-top: 0.1rem;
 }
 
+/* Operators management panel (Phase 13B) - compact strip between the
+   status grid and the main master/detail. */
+
+.operators-panel {
+  margin: 0 1.5rem 0.75rem;
+  background: #151a21;
+  border: 1px solid #1f242b;
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+}
+
+.operators-panel__header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.operators-panel__title {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #8b95a3;
+}
+
+.operators-panel__chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.operator-chip {
+  font-size: 0.78rem;
+  background: #1c2230;
+  border: 1px solid #2a313c;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.operator-chip__when {
+  font-size: 0.7rem;
+}
+
+.operators-form {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed #2a313c;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.operators-form .approval-form__input {
+  flex: 0 1 220px;
+  min-width: 0;
+}
+
+.operators-form__error {
+  color: #f3a3a3;
+  font-size: 0.78rem;
+  font-style: italic;
+}
+
 .run-card__report,
 .plan-card__details {
   margin: 0.5rem 0 0 0;

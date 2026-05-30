@@ -82,17 +82,20 @@ This is the full path for a visual walk-through of every UI section.
 
 9. **Click `Generate remediation plan`**. A new `Remediation plans` card appears with `risk medium · BGP neighbor recovery - investigate L1 and soft-reset session (draft)`. Open the `<details>` to see the human-readable summary plus the full plan JSON. **Nothing executes** — this is plan-only by design.
 
-10. **Approve a remediation plan** (Phase 10B inline form). Open the new plan card's details, click **Approve**. A small inline form appears inside the card with two fields:
-    - **Operator name** (required — the `Confirm approve` button is disabled until you type something).
+10. **Create a local operator** (Phase 13B inline panel). Above the incident list there's a compact **Operators** strip. Click `+ Add operator`, type a `display_name`, pick a role (`operator` / `admin`), click `Create operator`. The new operator chip appears immediately and is available in step 11's approval dropdown. Operators are minimal local identity rows — **not a login system**: no password, no token, no RBAC enforcement. The `role` column is purely advisory.
+
+11. **Approve a remediation plan** (Phase 10B inline form, Phase 13B operator picker). Open the new plan card's details, click **Approve**. A small inline form appears inside the card with three fields:
+    - **Operator** dropdown (Phase 13B, populated from `/api/operators`) — pick one of the operators you created in step 10 (or any of the pre-seeded ones like `local-operator`). Selecting an operator records the FK so the approval is auditable.
+    - **Or type a custom operator name** (legacy free-form fallback — used only when the dropdown is empty/disabled).
     - **Note** (optional textarea).
 
-    Type your name + an optional note, then click `Confirm approve`. The form collapses, the plan card's status badge flips from `pending` to `approved`, and an approval block shows your operator name + timestamp + note. **Nothing was executed** — the form's heading reminds you "records intent only; no execution."
+    `Confirm approve` is disabled until either the dropdown has a value OR the name field has non-empty text. Click it: the form collapses, the plan card's status badge flips from `pending` to `approved`, and an approval block shows the operator name + timestamp + note. **Nothing was executed** — the form's heading reminds you "records intent only; no execution."
 
     `Reject` works identically, with the badge ending up `rejected`. Only one approval form is open at a time across all plan cards. Clicking `Cancel` discards the in-progress draft.
 
-11. **Resize the window** to a narrow width: the master/detail collapses to a single column under `900px`.
+12. **Resize the window** to a narrow width: the master/detail collapses to a single column under `900px`.
 
-12. **Clean up** when done:
+13. **Clean up** when done:
 
     ```bash
     cd backend

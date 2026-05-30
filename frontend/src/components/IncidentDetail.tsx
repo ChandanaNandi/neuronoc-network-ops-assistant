@@ -23,6 +23,10 @@ interface IncidentDetailProps {
   // and the displayed RCAExplanation survives across re-renders.
   onPersistedMutation: () => void
   onError: (msg: string | null) => void
+  // Phase 13B: operators are owned by App so the OperatorsPanel and this
+  // approval form see the same list. `null` means loading or load failed -
+  // the form falls back cleanly to the free-form name input either way.
+  operators: Operator[] | null
 }
 
 type ActionKey = 'agent' | 'rca' | 'plan'
@@ -60,6 +64,7 @@ export function IncidentDetail({
   refreshTrigger,
   onPersistedMutation,
   onError,
+  operators,
 }: IncidentDetailProps) {
   const [incident, setIncident] = useState<Incident | null>(null)
   const [findings, setFindings] = useState<AnomalyFinding[] | null>(null)
@@ -72,10 +77,6 @@ export function IncidentDetail({
   const [running, setRunning] = useState<ActionKey | null>(null)
   const [actionMsg, setActionMsg] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  // Phase 13A operator list for the dropdown. `null` means we haven't loaded
-  // it yet; `[]` means load returned empty or failed. In either non-loaded
-  // case the form falls back cleanly to the free-form name input.
-  const [operators, setOperators] = useState<Operator[] | null>(null)
   // At most one inline approval form is open at a time. The draft captures
   // which plan it belongs to, the kind of decision, the chosen operator id
   // (or empty string when using the manual name fallback), the typed-in name
@@ -124,16 +125,7 @@ export function IncidentDetail({
         onError(`Incident detail: ${msg}`)
       })
 
-    // Phase 13A: load operator list in parallel. A failure here MUST NOT
-    // block detail load; the form falls back to the free-form name input.
-    api
-      .listOperators()
-      .then((list) => {
-        if (alive) setOperators(list)
-      })
-      .catch(() => {
-        if (alive) setOperators([])
-      })
+    // Phase 13B: operators are owned by App now, so no fetch here.
 
     return () => {
       alive = false

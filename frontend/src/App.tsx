@@ -1,8 +1,14 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import './App.css'
-import { ApiError, api, type LabBgpCollectionSummary } from './api'
+import {
+  ApiError,
+  api,
+  type LabBgpCollectionSummary,
+  type Operator,
+} from './api'
 import { IncidentDetail } from './components/IncidentDetail'
 import { IncidentList } from './components/IncidentList'
+import { OperatorsPanel } from './components/OperatorsPanel'
 import { StatusGrid } from './components/StatusGrid'
 
 export default function App() {
@@ -16,6 +22,25 @@ export default function App() {
   const [lastLabCollection, setLastLabCollection] =
     useState<LabBgpCollectionSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Phase 13B: operators state is lifted here so OperatorsPanel and
+  // IncidentDetail share a single source of truth. Creating an operator in
+  // the panel immediately updates the approval-form dropdown without
+  // needing a per-form refetch.
+  const [operators, setOperators] = useState<Operator[] | null>(null)
+  const refreshOperators = useCallback(async () => {
+    try {
+      const list = await api.listOperators()
+      setOperators(list)
+    } catch {
+      // A failed operator list must not break the rest of the console.
+      // Falls back to empty - approval form handles that path.
+      setOperators([])
+    }
+  }, [])
+  useEffect(() => {
+    void refreshOperators()
+  }, [refreshOperators])
 
   const refreshAll = useCallback(() => {
     setListRefresh((x) => x + 1)
@@ -92,6 +117,11 @@ export default function App() {
         lastLabCollection={lastLabCollection}
       />
 
+      <OperatorsPanel
+        operators={operators}
+        onRefresh={refreshOperators}
+      />
+
       <main className="app__main">
         <IncidentList
           selectedId={selectedId}
@@ -106,6 +136,7 @@ export default function App() {
               refreshTrigger={detailRefresh}
               onPersistedMutation={onPersistedMutation}
               onError={setError}
+              operators={operators}
             />
           ) : (
             <div className="empty-state">

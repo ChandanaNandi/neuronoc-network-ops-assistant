@@ -109,6 +109,83 @@ test('Generate remediation plan adds a new plan card', async ({ page }) => {
   })
 })
 
+test('Create an operator via the management panel, then approve a plan with it', async ({
+  page,
+}) => {
+  // Unique-per-run name so re-running the suite doesn't 409 on the create
+  // call. These operator rows accumulate in the dev DB and are documented
+  // as such; no delete endpoint exists and removing them isn't worth the
+  // psql plumbing in teardown.
+  const uniqueName = `e2e-ui-op-${Date.now()}`
+
+  await page.goto('/')
+
+  // Open the OperatorsPanel inline form.
+  await page.getByRole('button', { name: '+ Add operator' }).click()
+  await page.getByLabel('new operator name').fill(uniqueName)
+  await page.getByLabel('new operator role').selectOption('operator')
+  await page.getByRole('button', { name: 'Create operator' }).click()
+
+  // The new operator chip must appear in the panel without a page reload.
+  const chip = page.locator('.operator-chip', { hasText: uniqueName })
+  await expect(chip).toBeVisible({ timeout: 5_000 })
+  // Phase 13B contract: chip carries role + a created_at signal.
+  await expect(chip).toContainText('[operator]')
+  await expect(chip.locator('.operator-chip__when')).toBeVisible()
+
+  // Submitting the same display_name again must surface the 409 inline via
+  // the role=alert element.
+  await page.getByRole('button', { name: '+ Add operator' }).click()
+  await page.getByLabel('new operator name').fill(uniqueName)
+  await page.getByRole('button', { name: 'Create operator' }).click()
+  const dupErr = page.getByRole('alert')
+  await expect(dupErr).toBeVisible({ timeout: 5_000 })
+  await expect(dupErr).toContainText(/already exists/i)
+  // Close the dup form so it doesn't bleed into the approval flow below.
+  await page.getByRole('button', { name: 'Cancel' }).click()
+
+  // Now drive the approval flow using THIS just-created operator.
+  await page
+    .locator('button.incident-row', { hasText: BGP_TITLE_PATTERN })
+    .click()
+  await expect(
+    page.getByRole('heading', { name: /Anomaly findings/i }),
+  ).toBeVisible()
+
+  const planCountBefore = await page.locator('.plan-card').count()
+  await page
+    .getByRole('button', { name: 'Generate remediation plan' })
+    .click()
+  await expect(page.locator('.plan-card')).toHaveCount(planCountBefore + 1, {
+    timeout: 20_000,
+  })
+
+  const newest = page.locator('.plan-card').first()
+  await newest.locator('summary').click()
+  await newest.getByRole('button', { name: 'Approve' }).click()
+
+  const form = newest.locator('.approval-form')
+  await expect(form).toBeVisible()
+  await form
+    .getByLabel('operator', { exact: true })
+    .selectOption({ label: `${uniqueName} (operator)` })
+  await form.getByLabel('approval note').fill('approved with UI-created op')
+  await form
+    .getByRole('button', { name: /^Confirm approve$/i })
+    .click()
+
+  await expect(newest.locator('.badge--approval-approved')).toBeVisible({
+    timeout: 10_000,
+  })
+  await expect(newest.locator('.plan-card__approval')).toContainText(
+    uniqueName,
+  )
+  await expect(newest.locator('.plan-card__approval')).toContainText(
+    'approved with UI-created op',
+  )
+})
+
+
 test('Approve a plan via the inline form shows approved badge + operator + note', async ({
   page,
 }) => {
