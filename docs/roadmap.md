@@ -212,7 +212,7 @@ Conventions:
 - Tests: 17 new in `test_runbooks.py` covering loader (every bundled runbook present), the new `path` field, BGP-query → bgp.md ordering, limit, empty/no-match → `[]`, all four API entry points (`q` only, `incident_id` only, both combined, no-match returns `[]`), and the 400/404/422 error surface.
 - Same guardrails as every prior phase — no schema migration, no dependency added, no LLM behavior change, no remediation execution path, no device connection, no auth/RBAC, no frontend code touched.
 
-## Phase 17B — Runbook search UI panel *(current)*
+## Phase 17B — Runbook search UI panel ✓
 
 - **Deterministic keyword search UI, NOT vector RAG.** Frontend-only consumer of the Phase 17A `GET /api/runbooks/search` endpoint; no embeddings, no LLM, no full-file fetch.
 - New TS type `RunbookHit` (mirrors backend `RunbookHit` schema) and `api.searchRunbooks({q?, incident_id?, limit?})` wrapper.
@@ -223,6 +223,17 @@ Conventions:
 - **Caching skipped on purpose.** The panel's dominant interaction is "type new query" / "click new incident" — not toggle, like Phase 16B's validation preview. A cache would add state without paying for itself; if the operator wants the same result again, the round-trip is one cheap GET against the in-process Phase 17A scorer.
 - Existing components (OperatorsPanel, IncidentList, IncidentDetail, agent run inspector, validation preview block) are untouched.
 - Same guardrails — no backend change, no schema, no migration, no dependency, no execution path, no device contact, no auth/RBAC, no LLM behavior change.
+
+## Phase 18A — Real telemetry ingest skeleton (adapter interfaces only) *(current)*
+
+- **Adapter-interface-only — no real collection yet.** New `app/telemetry/` package ships the typed contract for future SNMP / syslog work without opening a socket, importing a real SNMP / syslog library, running a daemon, or persisting anything. Phase 18B+ will plug implementations behind these interfaces under a separate review.
+- New `TelemetryEvent` Pydantic model (`app/telemetry/events.py`, `extra="forbid"`): `source` / `collector_type` (enum: `snmp` / `syslog` / `manual`) / `hostname` / `mgmt_ip` / `device_hint` / `observed_at` / `event_type` / `severity` (enum: `info` / `notice` / `warning` / `error` / `critical`) / `message` / `labels` / `raw`. Bounds: `raw` capped at 64 keys × 4096 chars per string value; `labels` capped at 32 entries × 64-char keys × 256-char values. Bounds chosen to fit realistic SNMP traps and syslog frames; raising them in a later phase requires an explicit decision, not silent drift.
+- New `SNMPAdapter` and `SyslogAdapter` Protocol classes (`app/telemetry/adapters.py`, `runtime_checkable`). Pure typing contracts: `SNMPAdapter.poll(host, community?, oids?) -> list[TelemetryEvent]` and `SyslogAdapter.parse(line, *, default_hostname?) -> TelemetryEvent | None`. Zero implementation, zero network code.
+- New `normalize_manual_event(payload)` helper (`app/telemetry/normalizer.py`): round-trips a dict (or an already-built `TelemetryEvent`) through the model. **No persistence side effect.** Persistence — mapping a `TelemetryEvent` onto an `Incident` / `IncidentEvent` row — would force correlation / dedup / incident-creation rules that are explicitly Phase 18B+ territory; the user signed off on deferring that.
+- New endpoint `POST /api/telemetry/validate` → `TelemetryEvent`. Validation-only round-trip. **Does not persist anything** (pinned by a test that snapshots row counts across `incidents`, `incident_events`, `incident_evidence`, `recommendations`, `agent_runs`, `agent_steps` and asserts no divergence). 422 with field-level breakdown on schema failure.
+- Safety: new AST scan in `test_telemetry.py` fails the build if any file under `app/telemetry/` or `app/api/telemetry.py` ever imports `subprocess`, `pysnmp`, `easysnmp`, `netsnmp`, `socket`, `asyncio`, `paramiko`, `netmiko`, `napalm`, `scrapli`, `pexpect`, `fabric`, or `ansible_runner`. The forbid list spans SNMP libs, raw network primitives, async server primitives, and the existing remote-execution set.
+- Tests: 20 new in `test_telemetry.py` covering schema happy path + defaults, enum validation × 2, required-field validation, `extra="forbid"`, all three bounds (raw key count, raw value len, labels count), `normalize_manual_event` over dict + model + bad payload, `runtime_checkable` Protocol behavior (both adapters), API happy / 422 × 3 / no-persistence row-count assertion, and the AST safety scan.
+- Same guardrails as every prior phase — no schema migration, no dependency added, no LLM behavior change, no frontend code touched, no execution path, no device connection, no auth/RBAC, no background daemon/scheduler.
 
 ## Beyond
 
