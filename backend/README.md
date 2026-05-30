@@ -63,6 +63,46 @@ Endpoints:
 
 Interactive docs at `/docs` once running.
 
+## Demo path: real lab → incident → RCA → runbook → plan (lab-only)
+
+End-to-end smoke walk-through that proves the Phase 21A collector feeds the existing incident-detail / RCA / runbook / remediation flow against **real** read-only observations from the FRR lab. Lab-only by design — nothing here contacts an external device, and **no remediation is ever executed**.
+
+1. **Bring up the Phase 8B FRR Compose lab.**
+   ```bash
+   cd infra/lab
+   ./lab.sh up      # docker compose up -d the four FRR routers
+   ./lab.sh bgp     # quick check: BGP peers should be Established
+   ```
+
+2. **Inject a fault.** Pick one — both flow through the existing chain.
+   ```bash
+   # Option A: take down a router; its peers flip to Idle/Active.
+   docker stop neuronoc-lab-core-1
+   # Option B: stay running but flap an interface on a peer.
+   docker exec neuronoc-lab-edge-1 vtysh -c "conf t" -c "interface eth1" -c "shutdown"
+   # Either way, undo with: docker start <ct> / "no shutdown"
+   ```
+
+3. **Click `Collect lab snapshot` in the operator console header.** The Phase 21A `POST /api/lab/collect/snapshot` runs `docker exec` against each lab container (read-only `show *` commands only — `_assert_known_router` + `_assert_show_command` gate every call) and writes ONE Incident (`incident_type=lab_full_snapshot`, tagged `[lab-collector]`) carrying BGP events, per-interface status events, and a per-router `running_config_snapshot` evidence row.
+
+4. **Inspect the new incident** in the detail pane. You should see the not-Established peer event, the interface-status event with the down/errors payload, and the running-config evidence rows.
+
+5. **Click `Run agent analysis`** to drive the Phase 5 LangGraph workflow over the snapshot. The agent run inspector (Phase 15A/15B) shows the six deterministic LangGraph step payloads + the bundled final report.
+
+6. **Click `Generate RCA`** for the Phase 6 explanation (deterministic fallback if Ollama is unavailable; live LLM if reachable).
+
+7. **Use the Runbooks panel** (Phase 17B): click `Use selected incident` — the Phase 17A deterministic scorer surfaces `bgp.md` first for a BGP-shaped lab snapshot.
+
+8. **Click `Generate remediation plan`** for the Phase 7 draft. **The plan is plan-only** — `requires_approval=True` is pinned across the chain.
+
+9. **Optionally `Preview validation`** on the new plan card (Phase 16B) to see only the pre/post checks / validation criteria / rollback steps / safety notes — the actionable `proposed_commands` and `proposed_ansible_playbook` are intentionally absent from the preview.
+
+10. **Approval still required.** Approve via the inline form (Phase 13B operator picker). **Nothing executes.** The approval is intent-only.
+
+End-to-end pinned by `tests/test_lab_collector.py::test_phase21b_lab_snapshot_feeds_full_workflow_end_to_end`, which runs collector → Phase 5 → Phase 6 (forced deterministic fallback) → Phase 7 with a fake docker-exec runner.
+
+**Boundary note**: the lab event types (`lab_bgp_peer_not_established`, `lab_interface_status`) do not yet match the existing Phase 4 anomaly rules (which look for simulator-shaped event_type strings like `bgp_state_change`). The chain runs to completion regardless and produces a valid plan from the generic-investigation template; mapping lab events into the anomaly engine's rule set is a future-phase candidate (Phase 21C+).
+
 ## Simulator
 
 The Phase 3 simulator lives in `app/simulator/`. CLI:

@@ -972,3 +972,156 @@ def test_cli_collect_snapshot_prints_full_summary(
     assert parsed["routers_seen"] == 4
     assert parsed["configs_collected"] == 4
     assert parsed["evidence_created"] == 4
+
+
+# ============================================================
+# Phase 21B - demo path: lab snapshot -> Phase 5 -> 6 -> 7
+# ============================================================
+
+
+def test_phase21b_lab_snapshot_feeds_full_workflow_end_to_end(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 21B contract: an Incident produced by `collect_lab_snapshot()`
+    must be consumable by the existing chain end-to-end with NO new
+    plumbing — Phase 5 LangGraph workflow, Phase 6 RCA (deterministic
+    fallback), and Phase 7 remediation planner.
+
+    `build_remediation_plan()` cascades through all three: it calls
+    `run_incident_analysis()` internally if no completed AgentRun exists,
+    then `generate_rca_explanation(require_llm=False)`, then picks a
+    template. So one call exercises Phase 5 + 6 + 7 in sequence.
+
+    RCA is forced onto its deterministic fallback by stubbing
+    `generate_ollama_json` to raise `OllamaUnavailableError`. The test
+    NEVER depends on a live Ollama daemon, and the fallback path is
+    actually exercised (not skipped).
+
+    NO external device contact: the fake `_snapshot_runner` intercepts
+    every `docker exec` call. NO remediation execution: the planner is
+    plan-only, and we assert `requires_approval=True` on the produced
+    plan to pin that contract.
+
+    Boundary noted: the lab event types (`lab_bgp_peer_not_established`,
+    `lab_interface_status`) don't match the simulator-shaped event types
+    that the existing Phase 4 anomaly rules look for, so the workflow
+    produces 0 anomaly findings for this Incident today. That's a known
+    boundary and a Phase 21C+ candidate; what 21B pins is that the data
+    SHAPE is compatible and the chain runs to completion.
+    """
+    # Imports inside the test keep the existing module-level import list
+    # focused on the collector itself.
+    from app.agents.runner import run_incident_analysis
+    from app.db.models import AgentRun
+    from app.llm.ollama import OllamaUnavailableError
+    from app.rca import explainer as explainer_module
+    from app.remediation.planner import build_remediation_plan
+
+    def _no_ollama(*args: object, **kwargs: object) -> dict:
+        raise OllamaUnavailableError("test stub: Ollama disabled")
+
+    monkeypatch.setattr(
+        explainer_module, "generate_ollama_json", _no_ollama
+    )
+
+    # ---- Fault scenario ----
+    # edge-1 has BOTH a not-Established BGP peer AND an interface
+    # carrying input errors. Other routers are healthy. Every router
+    # returns its running-config cleanly.
+    bgp = {
+        "edge-1": _summary_for(
+            "edge-1",
+            peers={"172.30.1.2": _peer("Active", remote_as=65000)},
+        ),
+        "edge-2": _summary_for(
+            "edge-2",
+            peers={
+                "172.30.2.2": _peer(
+                    "Established", remote_as=65000, pfx_rcd=1, pfx_snt=4
+                )
+            },
+        ),
+        "core-1": _summary_for("core-1", peers={}),
+        "branch-1": _summary_for("branch-1", peers={}),
+    }
+    interfaces = {
+        "edge-1": _interface_json(ifname="Gi0/1", in_err=42),
+        "edge-2": _interface_json(ifname="Gi0/1"),
+        "core-1": _interface_json(ifname="Gi0/1"),
+        "branch-1": _interface_json(ifname="Gi0/1"),
+    }
+    configs = {
+        r: f"hostname {r}\nrouter bgp 65000\n"
+        for r in ("edge-1", "edge-2", "core-1", "branch-1")
+    }
+    runner = _snapshot_runner(
+        bgp_summary=bgp, interfaces=interfaces, configs=configs
+    )
+
+    # ---- Step 1: Phase 21A collector produces the Incident ----
+    summary = collect_lab_snapshot(db_session, runner=runner)
+    incident = db_session.get(Incident, summary.incident_id)
+    assert incident is not None
+    assert incident.incident_type == LAB_FULL_SNAPSHOT_INCIDENT_TYPE
+    # Fault scenario: 1 not-Established peer + 1 interface with errors,
+    # but NO interface admin/oper down and NO scrape failures, so
+    # severity caps at medium per the Phase 21A rules.
+    assert incident.severity == "medium"
+    assert summary.non_established_count == 1
+    assert summary.interfaces_with_errors == 1
+
+    event_types = db_session.scalars(
+        select(IncidentEvent.event_type).where(
+            IncidentEvent.incident_id == summary.incident_id
+        )
+    ).all()
+    assert "lab_bgp_peer_not_established" in event_types
+    assert "lab_interface_status" in event_types
+
+    evidence_types = db_session.scalars(
+        select(IncidentEvidence.evidence_type).where(
+            IncidentEvidence.incident_id == summary.incident_id
+        )
+    ).all()
+    assert evidence_types.count("running_config_snapshot") == 4
+
+    # ---- Step 2: Phase 5 LangGraph runs to completion ----
+    # Call directly so we can pin the AgentRun shape; `build_remediation_plan`
+    # below would also have run this internally if we'd skipped it.
+    agent_run = run_incident_analysis(db_session, summary.incident_id)
+    assert agent_run.status == "completed"
+    db_session.refresh(agent_run)
+    # Phase 5 declares six deterministic LangGraph nodes; each persists
+    # one AgentStep regardless of finding count.
+    assert len(agent_run.steps) == 6
+
+    # ---- Step 3: Phase 6 RCA via deterministic fallback ----
+    rca = explainer_module.generate_rca_explanation(
+        db_session, summary.incident_id, require_llm=False
+    )
+    # `llm_available=False` confirms the test exercised the fallback
+    # branch (not a real Ollama call).
+    assert rca.llm_available is False
+    assert rca.summary  # non-empty deterministic summary
+    assert rca.likely_root_cause  # non-empty
+
+    # ---- Step 4: Phase 7 remediation planner produces a draft plan ----
+    plan = build_remediation_plan(db_session, summary.incident_id)
+    assert plan.incident_id == summary.incident_id
+    assert plan.title  # non-empty
+    assert plan.plan_type  # non-empty (likely `generic_investigation`
+    #   today since `lab_full_snapshot` isn't in the template registry;
+    #   asserting non-empty keeps the test stable across template changes)
+    # **Plan-only contract pinned**: a plan produced by THIS chain must
+    # still require human approval before any imaginary execution path
+    # could touch a device. Phase 21B does NOT introduce remediation
+    # execution.
+    assert plan.requires_approval is True
+
+    # Confirm exactly one AgentRun was created end-to-end (proves the
+    # planner reused the existing run rather than triggering a second).
+    all_runs = db_session.scalars(
+        select(AgentRun).where(AgentRun.incident_id == summary.incident_id)
+    ).all()
+    assert len(all_runs) == 1
