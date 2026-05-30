@@ -248,7 +248,7 @@ Conventions:
 - The existing AST safety scan in `test_telemetry.py` already scans `app/telemetry/` recursively via `rglob("*.py")`, so the new `correlator.py` is covered automatically — same forbid list (`subprocess`, `pysnmp`, `easysnmp`, `netsnmp`, `socket`, `asyncio`, `paramiko`, `netmiko`, `napalm`, `scrapli`, `pexpect`, `fabric`, `ansible_runner`).
 - Same guardrails as every prior phase — no schema migration, no dependency added, no LLM behavior change, no frontend code touched, no execution path, no device connection, no auth/RBAC, no background daemon/scheduler.
 
-## Phase 18C — Manual telemetry preview UI *(current)*
+## Phase 18C — Manual telemetry preview UI ✓
 
 - **Preview-only UI for the Phase 18A/18B telemetry endpoints. NO real SNMP/syslog collection. NO persistence. NO device contact.** Frontend-only consumer of `POST /api/telemetry/validate` and `POST /api/telemetry/correlate/preview` — both endpoints are already pinned no-persistence on the backend by row-count regression tests.
 - New TS types `TelemetryEvent`, `TelemetryCorrelationPreview` (with `persisted: false` as a literal type — the compiler refuses any reassignment on the UI side too), plus `TelemetryCollectorType` / `TelemetrySeverity` string-literal unions matching the backend enums.
@@ -259,6 +259,16 @@ Conventions:
 - Playwright pins: panel-header caveat, body-intro caveat, BGP-shaped sample → `bgp_neighbor_down`, `persisted: false`, `would_create_incident` + `would_create_event` rows present, invalid JSON → inline parse error rendered without API call.
 - Existing components (OperatorsPanel, RunbooksPanel, IncidentList, IncidentDetail, agent inspector, validation preview, runbook search) are untouched.
 - Same guardrails — no backend change, no schema, no migration, no dependency, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
+
+## Phase 18D — Telemetry preview API smoke coverage *(current)*
+
+- **Client-contract coverage only — NOT a new telemetry capability.** Frontend has no Vitest / Jest harness (only Playwright); per spec, extended Playwright with `page.route()` interception rather than adding a new test framework / dependency.
+- Strengthened the existing Phase 18C `Telemetry preview correlates the sample BGP event` test with route interception that counts requests to `/api/telemetry/correlate/preview`. The valid-sample click is now pinned to fire **exactly 1** request; the invalid-JSON click is pinned to fire **0** additional requests (count stays at 1 after a 250 ms settle). Existing inline `"not sent to backend"` parse-error assertion preserved.
+- Two new e2e tests pin the client wrapper contracts:
+  - `Telemetry preview API: Validate POSTs the JSON body to /api/telemetry/validate` — captures method (POST) + JSON body and asserts the BGP-shaped sample round-trips unchanged.
+  - `Telemetry preview API: Preview correlation POSTs the body and the response carries persisted=false` — intercepts both directions via `route.fetch()`, asserts the outbound body matches the sample AND the inbound response carries `persisted: false`, `suggested_incident_type: bgp_neighbor_down`, `would_create_incident: true`, `would_create_event: true`.
+- Panel placement and default-collapsed behavior unchanged. No new client code paths added — the panel itself, the API wrappers, and the backend endpoints are all untouched.
+- Same guardrails — no backend change (zero `.py` files touched), no schema, no migration, no dependency added, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
 
 ## Beyond
 

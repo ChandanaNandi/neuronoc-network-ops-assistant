@@ -451,6 +451,16 @@ test('Runbook search returns BGP runbook for a BGP query and via Use selected in
 test('Telemetry preview correlates the sample BGP event without persisting anything', async ({
   page,
 }) => {
+  // Phase 18D strengthening: intercept the correlate/preview endpoint so we
+  // can prove the invalid-JSON path makes ZERO API calls. The handler just
+  // counts and forwards via route.continue() so the real backend still
+  // serves the request.
+  let correlateCallCount = 0
+  await page.route('**/api/telemetry/correlate/preview', async (route) => {
+    correlateCallCount += 1
+    await route.continue()
+  })
+
   await page.goto('/')
   const panel = page.locator('.telemetry-panel')
   await expect(panel).toBeVisible()
@@ -472,6 +482,10 @@ test('Telemetry preview correlates the sample BGP event without persisting anyth
     /contacts a device|device/i,
   )
 
+  // Pre-click sanity: the page load alone must NOT have fired a
+  // correlate/preview request.
+  expect(correlateCallCount).toBe(0)
+
   // Hit Preview correlation on the pre-filled BGP-shaped sample.
   await panel.getByRole('button', { name: /^Preview correlation$/i }).click()
 
@@ -489,6 +503,9 @@ test('Telemetry preview correlates the sample BGP event without persisting anyth
   await expect(result).toContainText(/would_create_incident/i)
   await expect(result).toContainText(/would_create_event/i)
 
+  // Valid sample click fired exactly one correlate/preview request.
+  expect(correlateCallCount).toBe(1)
+
   // Now flip the JSON to invalid syntax and assert the parse error renders
   // INLINE, without firing the API (the API error banner would say
   // "API rejected payload"; the parse error explicitly says "not sent to
@@ -500,6 +517,102 @@ test('Telemetry preview correlates the sample BGP event without persisting anyth
   await expect(panel.locator('.telemetry-panel__parse-error')).toContainText(
     /not sent to backend/i,
   )
+
+  // Phase 18D contract: invalid JSON must NOT fire a correlate/preview
+  // request. The count is still 1, not 2. Tiny settle delay rules out a
+  // late-arriving request that the test might miss; if a stray request
+  // was queued, it would land in the next ~250 ms.
+  await page.waitForTimeout(250)
+  expect(correlateCallCount).toBe(1)
+})
+
+test('Telemetry preview API: Validate POSTs the JSON body to /api/telemetry/validate', async ({
+  page,
+}) => {
+  // Phase 18D client-contract coverage for `api.validateTelemetry`. Capture
+  // the method + body, then let the real backend handle the request so the
+  // result still renders normally.
+  const captured: { method: string; body: string }[] = []
+  await page.route('**/api/telemetry/validate', async (route, request) => {
+    captured.push({
+      method: request.method(),
+      body: request.postData() ?? '',
+    })
+    await route.continue()
+  })
+
+  await page.goto('/')
+  const panel = page.locator('.telemetry-panel')
+  await panel.locator('summary').first().click()
+  await panel.getByRole('button', { name: /^Validate$/i }).click()
+
+  // Wait for the result block to render - that's the side effect that
+  // proves the request both fired AND succeeded round-trip.
+  await expect(panel.locator('.telemetry-panel__result')).toBeVisible({
+    timeout: 5_000,
+  })
+
+  // Exactly one POST captured.
+  expect(captured).toHaveLength(1)
+  expect(captured[0].method).toBe('POST')
+
+  // Body is the JSON the textarea was carrying (the BGP-shaped sample) -
+  // round-tripped through JSON.parse so we can assert specific fields
+  // without depending on Pydantic key ordering.
+  const parsed = JSON.parse(captured[0].body)
+  expect(parsed.collector_type).toBe('snmp')
+  expect(parsed.event_type).toBe('bgp_neighbor_down')
+  expect(parsed.source).toBe('snmp:edge-1')
+  expect(parsed.severity).toBe('critical')
+})
+
+test('Telemetry preview API: Preview correlation POSTs the body and the response carries persisted=false', async ({
+  page,
+}) => {
+  // Phase 18D client-contract coverage for `api.previewTelemetryCorrelation`.
+  // Intercept BOTH directions: the outbound POST body AND the response
+  // body. route.fetch() forwards to the real backend and lets us inspect
+  // the response before fulfilling it back to the page.
+  const captured: { method: string; body: string }[] = []
+  let responseJson: Record<string, unknown> | null = null
+  await page.route(
+    '**/api/telemetry/correlate/preview',
+    async (route, request) => {
+      captured.push({
+        method: request.method(),
+        body: request.postData() ?? '',
+      })
+      const response = await route.fetch()
+      const text = await response.text()
+      responseJson = JSON.parse(text) as Record<string, unknown>
+      await route.fulfill({ response, body: text })
+    },
+  )
+
+  await page.goto('/')
+  const panel = page.locator('.telemetry-panel')
+  await panel.locator('summary').first().click()
+  await panel.getByRole('button', { name: /^Preview correlation$/i }).click()
+
+  await expect(panel.locator('.telemetry-panel__result')).toBeVisible({
+    timeout: 5_000,
+  })
+
+  // Outbound: POST, body matches the BGP sample.
+  expect(captured).toHaveLength(1)
+  expect(captured[0].method).toBe('POST')
+  const requestBody = JSON.parse(captured[0].body)
+  expect(requestBody.event_type).toBe('bgp_neighbor_down')
+  expect(requestBody.collector_type).toBe('snmp')
+
+  // Inbound: response carries the Phase 18B contract - persisted=false,
+  // and the BGP-rule mapping landed.
+  expect(responseJson).not.toBeNull()
+  const body = responseJson!
+  expect(body.persisted).toBe(false)
+  expect(body.suggested_incident_type).toBe('bgp_neighbor_down')
+  expect(body.would_create_incident).toBe(true)
+  expect(body.would_create_event).toBe(true)
 })
 
 test('Generate RCA shows the RCA section and it persists past the response', async ({
