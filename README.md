@@ -345,6 +345,21 @@ cp .env.example .env
 
 Environment variables exported in your shell always override values from `.env`.
 
+## Continuous integration
+
+GitHub Actions runs the same local-quality gates on every PR and push (config: `.github/workflows/ci.yml`):
+
+- **Backend job** — Python 3.12 + uv, `uv sync`, `alembic upgrade head`, `uv run pytest -q` against a Postgres 16 service container on the same `localhost:5433` / `neuronoc / neuronoc_dev_password / neuronoc` dev defaults used locally.
+- **Frontend job** — Node 20 + pnpm 10, `pnpm install --frozen-lockfile`, `pnpm build` (`tsc -b && vite build` under strict TypeScript).
+- **E2E job** — Playwright Chromium smoke against real backend + real Vite proxy + the same Postgres service container; Playwright's own `webServer` config starts uvicorn and Vite. Runs in parallel with the other two jobs (does its own setup; no artifact handoff). On failure, the `playwright-report` and `test-results` directories are uploaded as a build artifact.
+
+**Not run in CI by design:**
+
+- The Phase 8B FRR Compose lab and the Phase 8C lab collector — they need FRR images and Docker-in-Docker; out of scope for this gate.
+- Ollama / `qwen2.5:*` — no GPU in CI runners, no model download. The Phase 6 RCA path is fallback-friendly, so the Playwright RCA test accepts either a live `RCA via <model>` line or the deterministic `RCA fallback used` message.
+
+CI is purely a verification gate; nothing in production behavior depends on it.
+
 ## Intentionally NOT implemented yet
 
 - **Real** telemetry collection (SNMP / syslog / streaming) — Phase 3 ships synthetic data only

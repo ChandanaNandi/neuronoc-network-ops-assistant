@@ -1,0 +1,177 @@
+# NeuroNOC CI - the same local-quality gates we run by hand, on every PR/push.
+#
+# Three jobs:
+#   - backend:  pytest against a real Postgres service.
+#   - frontend: pnpm build (TypeScript strict + Vite production bundle).
+#   - e2e:      Playwright smoke against real backend + real Vite proxy + real
+#               Postgres, with Ollama UNAVAILABLE (the RCA test is written to
+#               accept the deterministic fallback in that case).
+#
+# Things NOT run in CI by design:
+#   - Phase 8B FRR Compose lab (needs Docker-in-Docker and FRR images we don't
+#     pull from CI; the Phase 8C lab collector is not exercised here either).
+#   - Ollama / qwen models (no GPU, no model download; RCA falls back cleanly).
+#
+# Postgres credentials match the dev defaults baked into
+# backend/app/core/config.py, so no env override is required - uvicorn picks
+# up DATABASE_URL=postgresql+psycopg://neuronoc:neuronoc_dev_password@
+# localhost:5433/neuronoc by default.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  backend:
+    name: Backend (pytest + Alembic)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: neuronoc
+          POSTGRES_PASSWORD: neuronoc_dev_password
+          POSTGRES_DB: neuronoc
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U neuronoc -d neuronoc"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pin Python explicitly so we don't drift with ubuntu-latest defaults.
+      # backend/.python-version pins 3.12 locally; mirror that in CI.
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv (with cache)
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync
+
+      - name: Apply Alembic migrations
+        working-directory: backend
+        run: uv run alembic upgrade head
+
+      - name: Run pytest
+        working-directory: backend
+        run: uv run pytest -q
+
+  frontend:
+    name: Frontend (tsc + vite build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm must be installed BEFORE setup-node so setup-node can use the
+      # pnpm store cache. See pnpm/action-setup README.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node 20 (with pnpm cache)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (tsc -b && vite build)
+        working-directory: frontend
+        run: pnpm build
+
+  e2e:
+    name: E2E (Playwright Chromium)
+    runs-on: ubuntu-latest
+    # Run e2e in parallel with backend + frontend - it does its own setup, so
+    # making it depend on them would only serialize without saving work.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: neuronoc
+          POSTGRES_PASSWORD: neuronoc_dev_password
+          POSTGRES_DB: neuronoc
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U neuronoc -d neuronoc"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv (with cache)
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node 20 (with pnpm cache)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync
+
+      - name: Apply Alembic migrations
+        working-directory: backend
+        run: uv run alembic upgrade head
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium (+ OS deps)
+        working-directory: frontend
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Playwright smoke
+        working-directory: frontend
+        # Playwright's webServer config in playwright.config.ts auto-starts
+        # uvicorn (backend) and `pnpm dev` (vite); globalSetup seeds the
+        # simulator data + a `local-operator` row, globalTeardown resets the
+        # simulator data. No Ollama is required - the RCA test accepts the
+        # deterministic fallback.
+        run: pnpm test:e2e
+
+      # Surface Playwright artifacts on failure so the run is debuggable.
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          retention-days: 7
