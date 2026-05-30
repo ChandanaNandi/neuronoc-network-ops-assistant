@@ -235,7 +235,7 @@ Conventions:
 - Tests: 20 new in `test_telemetry.py` covering schema happy path + defaults, enum validation × 2, required-field validation, `extra="forbid"`, all three bounds (raw key count, raw value len, labels count), `normalize_manual_event` over dict + model + bad payload, `runtime_checkable` Protocol behavior (both adapters), API happy / 422 × 3 / no-persistence row-count assertion, and the AST safety scan.
 - Same guardrails as every prior phase — no schema migration, no dependency added, no LLM behavior change, no frontend code touched, no execution path, no device connection, no auth/RBAC, no background daemon/scheduler.
 
-## Phase 18B — Manual telemetry-to-incident correlation preview *(current)*
+## Phase 18B — Manual telemetry-to-incident correlation preview ✓
 
 - **Preview-only — NO persistence, NO correlation writes yet.** New `app/telemetry/correlator.py` ships a pure function `build_correlation_preview(event)` that maps a `TelemetryEvent` to a `TelemetryCorrelationPreview` describing how it WOULD land if real ingest were running. No DB session, no I/O, no LLM, no device contact. Phase 18C+ will layer real correlation (against open incidents) and write paths under a separate review.
 - New `TelemetryCorrelationPreview` model (`extra="forbid"`): `telemetry_event` (full echo), `suggested_incident_type`, `suggested_title`, `suggested_severity`, `suggested_event_type`, `suggested_event_source`, `suggested_event_payload` (nested under a single `telemetry` key so future hand-added IncidentEvent fields don't collide), `correlation_key`, `confidence`, `rationale`, `would_create_incident`, `would_create_event`, and `persisted: Literal[False]` — the type system refuses any reassignment, so this can't quietly turn into a write path.
@@ -247,6 +247,18 @@ Conventions:
 - Tests: 15 new in `test_telemetry.py` (now 35 total) covering all 5 specific rule mappings + fallback, severity-mapping table covering every level, message-vs-event_type confidence gap, payload nesting, device-descriptor fallback through hostname/hint/ip, `Literal[False]` type pin, API happy path + 422 + no-persistence row-count.
 - The existing AST safety scan in `test_telemetry.py` already scans `app/telemetry/` recursively via `rglob("*.py")`, so the new `correlator.py` is covered automatically — same forbid list (`subprocess`, `pysnmp`, `easysnmp`, `netsnmp`, `socket`, `asyncio`, `paramiko`, `netmiko`, `napalm`, `scrapli`, `pexpect`, `fabric`, `ansible_runner`).
 - Same guardrails as every prior phase — no schema migration, no dependency added, no LLM behavior change, no frontend code touched, no execution path, no device connection, no auth/RBAC, no background daemon/scheduler.
+
+## Phase 18C — Manual telemetry preview UI *(current)*
+
+- **Preview-only UI for the Phase 18A/18B telemetry endpoints. NO real SNMP/syslog collection. NO persistence. NO device contact.** Frontend-only consumer of `POST /api/telemetry/validate` and `POST /api/telemetry/correlate/preview` — both endpoints are already pinned no-persistence on the backend by row-count regression tests.
+- New TS types `TelemetryEvent`, `TelemetryCorrelationPreview` (with `persisted: false` as a literal type — the compiler refuses any reassignment on the UI side too), plus `TelemetryCollectorType` / `TelemetrySeverity` string-literal unions matching the backend enums.
+- New API wrappers `api.validateTelemetry(payload)` and `api.previewTelemetryCorrelation(payload)`. Both accept `unknown` as the payload type so the caller can hand a freshly-parsed JSON object straight through; the backend does the schema enforcement and returns 422 on failure.
+- New `TelemetryPanel` component lives below `RunbooksPanel` in `App.tsx`. Collapsible `<details>` element, default-closed, with the caveat "preview only · no persistence · no device contact" visible in the summary even before expansion.
+- Body has a JSON textarea pre-filled with a hard-coded BGP-shaped sample (session-only — never read from or written to `localStorage` / `sessionStorage` / cookies), three buttons (`Validate`, `Preview correlation`, `Reset to sample`), two distinct inline error paths ("Invalid JSON (not sent to backend)" for local parse failures, "API rejected payload" for backend 422s), and two result blocks (`Validated event` raw JSON + `Correlation preview` definition-list with `suggested_incident_type`, `suggested_title`, `suggested_severity`, `correlation_key`, `confidence`, `would_create_incident`, `would_create_event`, `persisted`, and a rationale list).
+- Both buttons parse the JSON locally first; if the parse fails, the API is NOT called — the inline parse error message explicitly says "not sent to backend" so the operator can distinguish which layer rejected the payload.
+- Playwright pins: panel-header caveat, body-intro caveat, BGP-shaped sample → `bgp_neighbor_down`, `persisted: false`, `would_create_incident` + `would_create_event` rows present, invalid JSON → inline parse error rendered without API call.
+- Existing components (OperatorsPanel, RunbooksPanel, IncidentList, IncidentDetail, agent inspector, validation preview, runbook search) are untouched.
+- Same guardrails — no backend change, no schema, no migration, no dependency, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
 
 ## Beyond
 

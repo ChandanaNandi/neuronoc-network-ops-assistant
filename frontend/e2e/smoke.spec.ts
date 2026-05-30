@@ -448,6 +448,60 @@ test('Runbook search returns BGP runbook for a BGP query and via Use selected in
   )
 })
 
+test('Telemetry preview correlates the sample BGP event without persisting anything', async ({
+  page,
+}) => {
+  await page.goto('/')
+  const panel = page.locator('.telemetry-panel')
+  await expect(panel).toBeVisible()
+
+  // Microcopy contract: the panel header carries the no-persistence /
+  // no-device-contact caveat even before expansion.
+  await expect(panel).toContainText(/no persistence/i)
+  await expect(panel).toContainText(/no device contact/i)
+
+  // Panel is collapsed by default - open it.
+  await panel.locator('summary').first().click()
+
+  // The body's intro reaffirms "Neither call persists anything or contacts
+  // a device." so the operator sees it inline before clicking.
+  await expect(panel.locator('.telemetry-panel__intro')).toContainText(
+    /persist/i,
+  )
+  await expect(panel.locator('.telemetry-panel__intro')).toContainText(
+    /contacts a device|device/i,
+  )
+
+  // Hit Preview correlation on the pre-filled BGP-shaped sample.
+  await panel.getByRole('button', { name: /^Preview correlation$/i }).click()
+
+  // Correlation preview block appears and carries the BGP mapping.
+  const result = panel.locator('.telemetry-panel__result')
+  await expect(result).toBeVisible({ timeout: 5_000 })
+  await expect(result).toContainText('Correlation preview')
+  await expect(result).toContainText('bgp_neighbor_down')
+
+  // persisted=false is rendered in the dl AND in the header caveat - assert
+  // BOTH branches so the contract is pinned at two layers.
+  await expect(result).toContainText(/persisted:?\s*false/i)
+  // Also pinned in the would_create_incident dl row (BGP rule -> true) and
+  // would_create_event (always true).
+  await expect(result).toContainText(/would_create_incident/i)
+  await expect(result).toContainText(/would_create_event/i)
+
+  // Now flip the JSON to invalid syntax and assert the parse error renders
+  // INLINE, without firing the API (the API error banner would say
+  // "API rejected payload"; the parse error explicitly says "not sent to
+  // backend").
+  const textarea = panel.getByLabel('telemetry event json')
+  await textarea.fill('{ this is not valid json }')
+  await panel.getByRole('button', { name: /^Preview correlation$/i }).click()
+  await expect(panel.locator('.telemetry-panel__parse-error')).toBeVisible()
+  await expect(panel.locator('.telemetry-panel__parse-error')).toContainText(
+    /not sent to backend/i,
+  )
+})
+
 test('Generate RCA shows the RCA section and it persists past the response', async ({
   page,
 }) => {

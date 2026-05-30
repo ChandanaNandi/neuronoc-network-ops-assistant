@@ -11,6 +11,7 @@ import { IncidentList } from './components/IncidentList'
 import { OperatorsPanel } from './components/OperatorsPanel'
 import { RunbooksPanel } from './components/RunbooksPanel'
 import { StatusGrid } from './components/StatusGrid'
+import { TelemetryPanel } from './components/TelemetryPanel'
 
 export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -124,6 +125,8 @@ export default function App() {
       />
 
       <RunbooksPanel selectedIncidentId={selectedId} />
+
+      <TelemetryPanel />
 
       <main className="app__main">
         <IncidentList

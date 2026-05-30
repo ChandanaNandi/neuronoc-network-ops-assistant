@@ -155,6 +155,51 @@ export interface RemediationPlan {
   confidence: number
 }
 
+// Phase 18A normalized telemetry event. Mirrors `TelemetryEvent` in
+// backend/app/telemetry/events.py. `collector_type` and `severity` are
+// string-literal unions matching the backend enum values.
+export type TelemetryCollectorType = 'snmp' | 'syslog' | 'manual'
+export type TelemetrySeverity =
+  | 'info'
+  | 'notice'
+  | 'warning'
+  | 'error'
+  | 'critical'
+
+export interface TelemetryEvent {
+  source: string
+  collector_type: TelemetryCollectorType
+  hostname?: string | null
+  mgmt_ip?: string | null
+  device_hint?: string | null
+  observed_at: string
+  event_type: string
+  severity: TelemetrySeverity
+  message: string
+  labels: Record<string, string>
+  raw: Record<string, unknown>
+}
+
+// Phase 18B read-only correlation preview. Mirrors
+// `TelemetryCorrelationPreview` in backend/app/telemetry/correlator.py.
+// `persisted` is `false` as a literal type so the compiler refuses any
+// reassignment - this can't quietly become a write path on the UI side.
+export interface TelemetryCorrelationPreview {
+  telemetry_event: TelemetryEvent
+  suggested_incident_type: string
+  suggested_title: string
+  suggested_severity: string
+  suggested_event_type: string
+  suggested_event_source: string
+  suggested_event_payload: Record<string, unknown>
+  correlation_key: string
+  confidence: number
+  rationale: string[]
+  would_create_incident: boolean
+  would_create_event: boolean
+  persisted: false
+}
+
 // Phase 17A scored runbook hit from `GET /api/runbooks/search`. Mirrors
 // `RunbookHit` in backend/app/schemas/runbooks.py. The backend returns
 // only the bounded ~280-char excerpt, never the full Markdown file - the
@@ -349,6 +394,21 @@ export const api = {
     if (params.limit !== undefined) qs.set('limit', String(params.limit))
     return request<RunbookHit[]>(`/api/runbooks/search?${qs.toString()}`)
   },
+
+  // Phase 18A validation-only round-trip for a TelemetryEvent payload.
+  // Backend returns 422 on schema failure; no persistence either way.
+  validateTelemetry: (payload: unknown): Promise<TelemetryEvent> =>
+    postJson<TelemetryEvent>('/api/telemetry/validate', payload),
+
+  // Phase 18B read-only correlation preview. Maps a TelemetryEvent to
+  // how it would land as an Incident + IncidentEvent; persisted=false.
+  previewTelemetryCorrelation: (
+    payload: unknown,
+  ): Promise<TelemetryCorrelationPreview> =>
+    postJson<TelemetryCorrelationPreview>(
+      '/api/telemetry/correlate/preview',
+      payload,
+    ),
 }
 
 // ----- small utils for the UI -----
