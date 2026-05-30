@@ -55,6 +55,7 @@ Endpoints:
 - `POST /api/lab/collect/bgp` — Phase 8C: one-shot BGP collection from the Compose FRR lab (writes one tagged `Incident` + per-peer events; requires the Phase 8B lab to be running)
 - `GET /api/operators` — Phase 13A: list operators (minimal dev/local identity rows)
 - `POST /api/operators` — create an operator (409 on duplicate `display_name`)
+- `GET /api/validation/recommendations/{id}/preview` — Phase 16A: read-only validation surface derived from a persisted remediation plan's fenced JSON. Returns `pre_checks` / `post_checks` / `validation_criteria` / `rollback_steps` / `safety_notes` plus `executable=False` and `validation_source="remediation_plan"`. 404 if the recommendation is missing, 400 if `recommendation_type` ≠ `remediation_plan`, 400 if the plan JSON is missing / malformed / fails schema validation. **Plan-only and read-only — no execution, no device contact; `proposed_commands` / `proposed_ansible_playbook` are intentionally NOT included so the response can't be mistaken for an actionable artifact.**
 
 Interactive docs at `/docs` once running.
 

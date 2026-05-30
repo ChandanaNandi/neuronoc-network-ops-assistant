@@ -169,7 +169,7 @@ Conventions:
 - Existing Playwright `.run-card` selector preserved; a new test opens the newest run after `Run agent analysis` and asserts all 6 deterministic LangGraph step names (`load_incident`, `anomaly_detection`, `evidence_summary`, `correlation`, `validation`, `report`) plus that the `report` step's payload renders.
 - Read-only inspection: expanding a step does NOT re-execute anything; opening the inspector does NOT contact a device. Same guardrails as every prior phase — no execution path, no auth/RBAC, no LLM behavior change.
 
-## Phase 15B — Agent inspector polish: status, duration, copy *(current)*
+## Phase 15B — Agent inspector polish: status, duration, copy ✓
 
 - New tiny helper `formatDuration(startIso, endIso?)` in `frontend/src/api.ts` (alongside `formatDate` / `relativeAge`): returns `<n> ms` for sub-second deltas, `<n.n> s` otherwise, or `null` when the end timestamp is absent. ~10 lines, no dependency.
 - Run summary appends ` · <duration>` to the header when `run.completed_at` is present. Step heads gain a payload-shape chip (`· input N keys · output M keys`, `· error` suffix when a step recorded an error) so operators can scan run shape without expanding every step.
@@ -177,6 +177,17 @@ Conventions:
 - The collapsed `final report` block grows a `Copy final report JSON` button that calls `navigator.clipboard.writeText(...)` inside try/catch and renders an inline `Copied.` / `Copy failed.` (`role="status"`, `aria-live="polite"`) that auto-clears after 2 s. Per-run keyed state lets multiple run cards each carry their own copy message independently.
 - Playwright assertions pinned: a duration token (regex `· \d+(\.\d+)? (ms|s)`), at least one step's `input N keys` / `output N keys` summary chip, and the copy button click surfacing EITHER `Copied.` OR `Copy failed.` (regex). Clipboard contents are intentionally NOT sniffed - clipboard permissions vary between headed/headless and a strict assertion would be brittle without serving no useful operator value.
 - Same guardrails as every prior phase — no execution path, no auth/RBAC, no LLM behavior change, no backend API/schema/migration touched, no new dependency.
+
+## Phase 16A — Validation preview model and API *(current)*
+
+- New package `app/validation/` with a single read-only entry point `build_validation_preview(db, recommendation_id)` that re-projects a persisted remediation plan's validation surface (`pre_checks`, `post_checks`, `validation_criteria`, `rollback_steps`, `safety_notes`). Backend-only.
+- Helper `extract_fenced_json(text)` parses the ```` ```json … ``` ```` block written by `app/remediation/planner._render_details`; returns `None` on missing / malformed / non-object content (caller turns that into a `PlanParseError`). Tolerates CRLF-normalised dumps. Unit-tested directly.
+- New schema `ValidationPreviewRead` (`app/schemas/validation.py`) pins `executable: Literal[False]` and `validation_source: Literal["remediation_plan"]` so neither field can be flipped by a future caller; intentionally OMITS `proposed_commands` / `proposed_ansible_playbook` so the response cannot be mistaken for an actionable artifact.
+- HTTP: `GET /api/validation/recommendations/{id}/preview` → `ValidationPreviewRead`. 404 if recommendation missing, 400 if `recommendation_type` ≠ `remediation_plan`, 400 if the fenced JSON is missing / malformed / fails `RemediationPlan` schema validation. GET-only; never mutates row state.
+- No migration. Validation surface is derived 100% from existing `recommendations.details` content (the planner has been writing fenced JSON since Phase 7).
+- Safety: parallel AST scan (mirror of `test_remediation.py`'s) added in `test_validation.py`. Fails the build if any module under `app/validation/` or `app/api/validation.py` imports `subprocess`, `ansible_runner`, `netmiko`, `napalm`, `paramiko`, `pexpect`, `fabric`, or `scrapli`.
+- **CLI intentionally skipped.** The API returns the exact same Pydantic JSON via a single GET, and the existing `python -m app.remediation.planner --incident-id X --no-persist` already prints the full plan (including all validation fields). Adding a `python -m app.validation.preview` would duplicate the API for zero new capability and would carry ~20 lines of argparse boilerplate + 1–2 CLI tests for the privilege.
+- Same guardrails as every prior phase — no execution path, no device connection, no auth/RBAC, no LLM behavior change, no schema migration, no new dependency. Frontend wiring deferred to a later sub-phase.
 
 ## Beyond
 
