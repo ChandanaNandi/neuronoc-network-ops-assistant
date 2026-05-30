@@ -555,6 +555,52 @@
   font-size: 0.72rem;
 }
 
+/* Phase 16B: validation preview block inside plan-card */
+.validation-preview {
+  margin: 0.5rem 0 0;
+  padding: 0.55rem 0.7rem;
+  background: #050810;
+  border-left: 2px solid #2e5a8f;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.validation-preview__header strong {
+  font-size: 0.8rem;
+}
+
+.validation-preview__caveat {
+  font-size: 0.72rem;
+  font-style: italic;
+}
+
+.validation-preview__section {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.validation-preview__label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #8b95a3;
+}
+
+.validation-preview__list {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.validation-preview__list li {
+  margin: 0.1rem 0;
+}
+
+.validation-preview__empty {
+  font-size: 0.72rem;
+}
+
 .plan-section__caveat {
   margin-bottom: 0.5rem;
   font-size: 0.78rem;

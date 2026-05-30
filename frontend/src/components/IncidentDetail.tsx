@@ -13,6 +13,7 @@ import {
   type Operator,
   type RCAExplanation,
   type Recommendation,
+  type ValidationPreview,
 } from '../api'
 
 interface IncidentDetailProps {
@@ -95,6 +96,26 @@ export function IncidentDetail({
   // their own "Copied." / "Copy failed." message at the same time. Cleared
   // after 2 s so the run card doesn't grow a permanent status tag.
   const [copyMsg, setCopyMsg] = useState<Record<string, string>>({})
+  // Phase 16B: per-recommendation validation preview cache, scoped to the
+  // current incident. Approving/rejecting does not invalidate the preview
+  // (the validation surface is derived from the persisted plan JSON which
+  // doesn't change with approval state); only navigating to a different
+  // incident clears it via the incidentId-scoped reset effect below.
+  const [previews, setPreviews] = useState<Record<string, ValidationPreview>>(
+    {},
+  )
+  const [previewLoading, setPreviewLoading] = useState<Record<string, boolean>>(
+    {},
+  )
+  const [previewError, setPreviewError] = useState<Record<string, string>>({})
+  const [previewOpen, setPreviewOpen] = useState<Record<string, boolean>>({})
+
+  useEffect(() => {
+    setPreviews({})
+    setPreviewLoading({})
+    setPreviewError({})
+    setPreviewOpen({})
+  }, [incidentId])
 
   useEffect(() => {
     let alive = true
@@ -196,6 +217,37 @@ export function IncidentDetail({
       onError(`${approvalDraft.kind} plan: ${msg}`)
     } finally {
       setSubmittingApproval(false)
+    }
+  }
+
+  async function togglePreview(recommendationId: string) {
+    // Toggle visibility. When opening, lazy-fetch IFF we don't already have
+    // it cached - the cache survives close/reopen so toggling is free after
+    // the first load.
+    const wasOpen = !!previewOpen[recommendationId]
+    setPreviewOpen((prev) => ({ ...prev, [recommendationId]: !wasOpen }))
+    if (wasOpen) return
+    if (previews[recommendationId]) return
+
+    setPreviewLoading((prev) => ({ ...prev, [recommendationId]: true }))
+    setPreviewError((prev) => {
+      const next = { ...prev }
+      delete next[recommendationId]
+      return next
+    })
+    try {
+      const data = await api.getValidationPreview(recommendationId)
+      setPreviews((prev) => ({ ...prev, [recommendationId]: data }))
+    } catch (err) {
+      const msg =
+        err instanceof ApiError ? err.detail : 'failed to load validation preview'
+      setPreviewError((prev) => ({ ...prev, [recommendationId]: msg }))
+    } finally {
+      setPreviewLoading((prev) => {
+        const next = { ...prev }
+        delete next[recommendationId]
+        return next
+      })
     }
   }
 
@@ -677,10 +729,27 @@ export function IncidentDetail({
                 >
                   Reject
                 </button>
+                <button
+                  type="button"
+                  className="btn btn--action"
+                  disabled={!!previewLoading[p.id]}
+                  onClick={() => void togglePreview(p.id)}
+                >
+                  {previewOpen[p.id]
+                    ? 'Hide validation'
+                    : 'Preview validation'}
+                </button>
                 <span className="muted plan-card__safety">
                   records intent only; no execution
                 </span>
               </div>
+              {previewOpen[p.id] && (
+                <ValidationPreviewBlock
+                  loading={!!previewLoading[p.id]}
+                  error={previewError[p.id] ?? null}
+                  preview={previews[p.id] ?? null}
+                />
+              )}
               {approvalDraft?.recId === p.id && (
                 <form
                   className="approval-form"
@@ -792,6 +861,78 @@ export function IncidentDetail({
             </details>
           ))}
       </section>
+    </div>
+  )
+}
+
+// Phase 16B: read-only validation surface for one remediation plan.
+// Intentionally renders ONLY pre/post checks, validation criteria, rollback
+// steps, and safety notes - never `proposed_commands` or the Ansible draft.
+// The microcopy + executable=false line are part of the contract; do not
+// remove without updating the e2e assertion in smoke.spec.ts.
+function ValidationPreviewBlock({
+  loading,
+  error,
+  preview,
+}: {
+  loading: boolean
+  error: string | null
+  preview: ValidationPreview | null
+}) {
+  return (
+    <div className="validation-preview" role="region" aria-label="validation preview">
+      {loading && (
+        <div className="muted">Loading validation preview...</div>
+      )}
+      {error && (
+        <div className="error-banner" role="alert">
+          Validation preview failed: {error}
+        </div>
+      )}
+      {preview && (
+        <>
+          <div className="validation-preview__header">
+            <strong>Validation preview</strong>
+            <span className="muted">
+              {' '}· source: {preview.validation_source}
+              {' '}· executable: {String(preview.executable)}
+            </span>
+          </div>
+          <div className="validation-preview__caveat muted">
+            Read-only. Nothing here executes a command or contacts a device.
+            Proposed commands and Ansible playbook are intentionally omitted.
+          </div>
+          <PreviewList label="Pre-checks" items={preview.pre_checks} />
+          <PreviewList label="Post-checks" items={preview.post_checks} />
+          <PreviewList
+            label="Validation criteria"
+            items={preview.validation_criteria}
+          />
+          <PreviewList label="Rollback steps" items={preview.rollback_steps} />
+          <PreviewList label="Safety notes" items={preview.safety_notes} />
+        </>
+      )}
+    </div>
+  )
+}
+
+function PreviewList({ label, items }: { label: string; items: string[] }) {
+  if (items.length === 0) {
+    return (
+      <div className="validation-preview__section">
+        <div className="validation-preview__label">{label}</div>
+        <div className="muted validation-preview__empty">(none)</div>
+      </div>
+    )
+  }
+  return (
+    <div className="validation-preview__section">
+      <div className="validation-preview__label">{label}</div>
+      <ul className="validation-preview__list">
+        {items.map((s, i) => (
+          <li key={i}>{s}</li>
+        ))}
+      </ul>
     </div>
   )
 }

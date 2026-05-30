@@ -193,6 +193,53 @@ test('Agent run inspector reveals the six deterministic LangGraph steps', async 
   )
 })
 
+test('Preview validation renders read-only check lists and hides actionable fields', async ({
+  page,
+}) => {
+  await selectBgpIncident(page)
+
+  // Generate a fresh plan so this test is independent of prior runs.
+  const beforeCount = await page.locator('.plan-card').count()
+  await page.getByRole('button', { name: 'Generate remediation plan' }).click()
+  await expect(page.locator('.plan-card')).toHaveCount(beforeCount + 1, {
+    timeout: 20_000,
+  })
+
+  const newest = page.locator('.plan-card').first()
+  await newest.locator('summary').click()
+  await newest.getByRole('button', { name: 'Preview validation' }).click()
+
+  const preview = newest.locator('.validation-preview')
+  await expect(preview).toBeVisible({ timeout: 10_000 })
+
+  // Required sections - BGP plan template always populates pre-checks +
+  // validation criteria, so these are stable assertions.
+  await expect(preview.getByText('Pre-checks', { exact: true })).toBeVisible()
+  await expect(
+    preview.getByText('Validation criteria', { exact: true }),
+  ).toBeVisible()
+
+  // Phase 16A contract: response carries executable=false and a
+  // remediation_plan validation_source. The microcopy renders both inline.
+  await expect(preview).toContainText(/executable:\s+false/i)
+  await expect(preview).toContainText(/source:\s+remediation_plan/i)
+
+  // The read-only caveat must be present and the actionable fields
+  // (proposed_commands / proposed_ansible_playbook) must NOT leak through.
+  await expect(preview).toContainText(/read-only/i)
+  await expect(preview).not.toContainText('proposed_commands')
+  await expect(preview).not.toContainText('proposed_ansible_playbook')
+
+  // Toggle off then on again - the cached preview should re-appear without
+  // needing a network roundtrip. We don't sniff the network; instead we
+  // assert the contract holds (no loading state on the second open).
+  await newest.getByRole('button', { name: 'Hide validation' }).click()
+  await expect(preview).toHaveCount(0)
+  await newest.getByRole('button', { name: 'Preview validation' }).click()
+  await expect(preview).toBeVisible()
+  await expect(preview).not.toContainText('Loading validation preview')
+})
+
 test('Generate remediation plan adds a new plan card', async ({ page }) => {
   await selectBgpIncident(page)
 

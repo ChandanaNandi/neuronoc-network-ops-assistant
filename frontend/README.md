@@ -84,9 +84,11 @@ This is the full path for a visual walk-through of every UI section.
 
 9. **Click `Generate remediation plan`**. A new `Remediation plans` card appears with `risk medium · BGP neighbor recovery - investigate L1 and soft-reset session (draft)`. Open the `<details>` to see the human-readable summary plus the full plan JSON. **Nothing executes** — this is plan-only by design.
 
-10. **Create a local operator** (Phase 13B inline panel). Above the incident list there's a compact **Operators** strip. Click `+ Add operator`, type a `display_name`, pick a role (`operator` / `admin`), click `Create operator`. The new operator chip appears immediately and is available in step 11's approval dropdown. Operators are minimal local identity rows — **not a login system**: no password, no token, no RBAC enforcement. The `role` column is purely advisory.
+10. **Create a local operator** (Phase 13B inline panel). Above the incident list there's a compact **Operators** strip. Click `+ Add operator`, type a `display_name`, pick a role (`operator` / `admin`), click `Create operator`. The new operator chip appears immediately and is available in step 12's approval dropdown. Operators are minimal local identity rows — **not a login system**: no password, no token, no RBAC enforcement. The `role` column is purely advisory.
 
-11. **Approve a remediation plan** (Phase 10B inline form, Phase 13B operator picker). Open the new plan card's details, click **Approve**. A small inline form appears inside the card with three fields:
+11. **Preview validation for the plan (Phase 16B).** Before deciding, click **Preview validation** in the plan card's action row. A read-only block expands inline showing `Pre-checks`, `Post-checks`, `Validation criteria`, `Rollback steps`, and `Safety notes`, along with an `executable: false · source: remediation_plan` header and the caveat "Read-only. Nothing here executes a command or contacts a device. Proposed commands and Ansible playbook are intentionally omitted." The preview is fetched on demand and cached per recommendation id — closing then reopening it is instant, with no network roundtrip. Approve / Reject behavior is unaffected.
+
+12. **Approve a remediation plan** (Phase 10B inline form, Phase 13B operator picker). Open the new plan card's details, click **Approve**. A small inline form appears inside the card with three fields:
     - **Operator** dropdown (Phase 13B, populated from `/api/operators`) — pick one of the operators you created in step 10 (or any of the pre-seeded ones like `local-operator`). Selecting an operator records the FK so the approval is auditable.
     - **Or type a custom operator name** (legacy free-form fallback — used only when the dropdown is empty/disabled).
     - **Note** (optional textarea).
@@ -95,9 +97,9 @@ This is the full path for a visual walk-through of every UI section.
 
     `Reject` works identically, with the badge ending up `rejected`. Only one approval form is open at a time across all plan cards. Clicking `Cancel` discards the in-progress draft.
 
-12. **Resize the window** to a narrow width: the master/detail collapses to a single column under `900px`.
+13. **Resize the window** to a narrow width: the master/detail collapses to a single column under `900px`.
 
-13. **Clean up** when done:
+14. **Clean up** when done:
 
     ```bash
     cd backend

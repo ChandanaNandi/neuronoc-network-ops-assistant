@@ -178,7 +178,7 @@ Conventions:
 - Playwright assertions pinned: a duration token (regex `· \d+(\.\d+)? (ms|s)`), at least one step's `input N keys` / `output N keys` summary chip, and the copy button click surfacing EITHER `Copied.` OR `Copy failed.` (regex). Clipboard contents are intentionally NOT sniffed - clipboard permissions vary between headed/headless and a strict assertion would be brittle without serving no useful operator value.
 - Same guardrails as every prior phase — no execution path, no auth/RBAC, no LLM behavior change, no backend API/schema/migration touched, no new dependency.
 
-## Phase 16A — Validation preview model and API *(current)*
+## Phase 16A — Validation preview model and API ✓
 
 - New package `app/validation/` with a single read-only entry point `build_validation_preview(db, recommendation_id)` that re-projects a persisted remediation plan's validation surface (`pre_checks`, `post_checks`, `validation_criteria`, `rollback_steps`, `safety_notes`). Backend-only.
 - Helper `extract_fenced_json(text)` parses the ```` ```json … ``` ```` block written by `app/remediation/planner._render_details`; returns `None` on missing / malformed / non-object content (caller turns that into a `PlanParseError`). Tolerates CRLF-normalised dumps. Unit-tested directly.
@@ -188,6 +188,16 @@ Conventions:
 - Safety: parallel AST scan (mirror of `test_remediation.py`'s) added in `test_validation.py`. Fails the build if any module under `app/validation/` or `app/api/validation.py` imports `subprocess`, `ansible_runner`, `netmiko`, `napalm`, `paramiko`, `pexpect`, `fabric`, or `scrapli`.
 - **CLI intentionally skipped.** The API returns the exact same Pydantic JSON via a single GET, and the existing `python -m app.remediation.planner --incident-id X --no-persist` already prints the full plan (including all validation fields). Adding a `python -m app.validation.preview` would duplicate the API for zero new capability and would carry ~20 lines of argparse boilerplate + 1–2 CLI tests for the privilege.
 - Same guardrails as every prior phase — no execution path, no device connection, no auth/RBAC, no LLM behavior change, no schema migration, no new dependency. Frontend wiring deferred to a later sub-phase.
+
+## Phase 16B — Validation preview UI *(current)*
+
+- Frontend-only: surfaces the Phase 16A `GET /api/validation/recommendations/{id}/preview` response inside each remediation `plan-card` so operators can inspect the validation surface before approving.
+- New TS type `ValidationPreview` (`frontend/src/api.ts`) mirrors `ValidationPreviewRead`; `executable: false` is a literal type so the compiler refuses any reassignment. New `api.getValidationPreview(recommendationId)` fetch wrapper.
+- New `Preview validation` button in the `plan-card` action row (next to Approve/Reject). Toggles a collapsible `ValidationPreviewBlock` sub-component rendered below the actions. Loading / error states are per-plan keyed records on `IncidentDetail`, never spilling between plan cards.
+- Preview cache is per recommendation id, scoped to the current incident — a second open of the same plan's preview is instant (no network roundtrip). Cache resets only when `incidentId` changes (validation surface is derived from `recommendations.details` JSON, which doesn't mutate on approve/reject).
+- Render contract: ONLY `Pre-checks`, `Post-checks`, `Validation criteria`, `Rollback steps`, `Safety notes` plus a header line `source: remediation_plan · executable: false` and the caveat "Read-only. Nothing here executes a command or contacts a device. Proposed commands and Ansible playbook are intentionally omitted." The Playwright assertion pins `executable: false`, `source: remediation_plan`, both `Pre-checks` and `Validation criteria` sections, AND the absence of `proposed_commands` / `proposed_ansible_playbook` strings — so any future refactor that leaks an actionable field will fail the build.
+- Existing Approve/Reject behavior is unaffected; the operator strip, approval form, and Phase 15B inspector are untouched.
+- Same guardrails as every prior phase — no backend change, no schema, no migration, no dependency, no execution path, no device contact, no auth/RBAC, no LLM behavior change.
 
 ## Beyond
 

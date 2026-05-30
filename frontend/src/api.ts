@@ -155,6 +155,28 @@ export interface RemediationPlan {
   confidence: number
 }
 
+// Phase 16A read-only validation surface for a persisted remediation plan.
+// Mirrors `ValidationPreviewRead` in backend/app/schemas/validation.py.
+// `executable` is hard-pinned to false on the backend Pydantic side
+// (Literal[False]); we mirror that with a literal type here so a future
+// caller can't reassign it without a compiler complaint. Intentionally
+// does NOT include `proposed_commands` / `proposed_ansible_playbook` -
+// the preview is read-only by construction.
+export interface ValidationPreview {
+  recommendation_id: string
+  incident_id: string
+  plan_title: string
+  plan_risk: string
+  validation_source: 'remediation_plan'
+  pre_checks: string[]
+  post_checks: string[]
+  validation_criteria: string[]
+  rollback_steps: string[]
+  safety_notes: string[]
+  executable: false
+  generated_at: string
+}
+
 export interface LabBgpCollectionSummary {
   incident_id: string
   routers_seen: number
@@ -294,6 +316,12 @@ export const api = {
 
   createOperator: (body: OperatorCreate): Promise<Operator> =>
     postJson<Operator>('/api/operators', body),
+
+  // Phase 16A read-only validation preview for a persisted remediation plan.
+  getValidationPreview: (recommendationId: string): Promise<ValidationPreview> =>
+    request<ValidationPreview>(
+      `/api/validation/recommendations/${recommendationId}/preview`,
+    ),
 }
 
 // ----- small utils for the UI -----
