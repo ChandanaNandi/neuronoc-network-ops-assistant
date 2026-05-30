@@ -156,6 +156,41 @@ test('Agent run inspector reveals the six deterministic LangGraph steps', async 
   await expect(reportStep.locator('.run-card__step-body')).toContainText(
     /output:|No payload recorded\./,
   )
+
+  // Phase 15B: run summary carries a duration token. We deliberately don't
+  // assert exact ms - the workflow is fast but variable. Format helper emits
+  // either `<n> ms` or `<n.n> s`, with leading separator " · ".
+  await expect(newest.locator('summary').first()).toContainText(
+    /·\s+\d+(\.\d+)?\s+(ms|s)\b/,
+  )
+
+  // Phase 15B: at least one step head shows the payload-key summary chip.
+  // The Phase 5 report node always persists an output_payload with > 0 keys,
+  // so `output \d+ keys` will be present somewhere in the list.
+  await expect(
+    newest
+      .locator('.run-card__step-summary', {
+        hasText: /input \d+ keys|output \d+ keys/,
+      })
+      .first(),
+  ).toBeVisible()
+
+  // Phase 15B: the copy-final-report button is wired and reports either a
+  // success ("Copied.") or a graceful failure ("Copy failed.") inline.
+  // Browsers gate clipboard.writeText on permission/secure-context; rather
+  // than thread Playwright permission grants in here, accept either branch -
+  // the operationally-important contract is "user got immediate feedback".
+  const finalReport = newest.locator('.run-card__report-wrap')
+  await finalReport.locator('summary').click()
+  const copyBtn = finalReport.getByRole('button', {
+    name: /Copy final report JSON/i,
+  })
+  await expect(copyBtn).toBeVisible()
+  await copyBtn.click()
+  await expect(finalReport.locator('.run-card__copy-msg')).toContainText(
+    /Copied\.|Copy failed\./,
+    { timeout: 5_000 },
+  )
 })
 
 test('Generate remediation plan adds a new plan card', async ({ page }) => {

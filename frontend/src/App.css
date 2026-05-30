@@ -531,6 +531,30 @@
   margin-top: 0.3rem;
 }
 
+.run-card__step-summary {
+  font-size: 0.72rem;
+}
+
+.run-card__duration {
+  font-variant-numeric: tabular-nums;
+}
+
+.run-card__copy-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+
+.run-card__copy-msg {
+  font-size: 0.72rem;
+}
+
+.btn--small {
+  padding: 0.18rem 0.45rem;
+  font-size: 0.72rem;
+}
+
 .plan-section__caveat {
   margin-bottom: 0.5rem;
   font-size: 0.78rem;

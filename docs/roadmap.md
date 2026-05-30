@@ -160,7 +160,7 @@ Conventions:
 - The e2e CI job already uploads both `frontend/playwright-report/` (browsable HTML report) and `frontend/test-results/` (per-test `trace.zip` + failure screenshots) as a single artifact named `playwright-report`, only on failure, with 7-day retention. README has the operator-facing recipe.
 - Test/CI configuration + docs only; no app code, no schema, no dependencies, no new CI jobs.
 
-## Phase 15A — Agent run inspector UI *(current)*
+## Phase 15A — Agent run inspector UI ✓
 
 - Frontend-only: enriches the `run-card` block in `IncidentDetail` so operators can inspect a Phase 5 LangGraph audit trail without leaving the incident view.
 - Run-card header now shows: status badge, short id, `workflow_name`, started/completed timestamps, step count.
@@ -168,6 +168,15 @@ Conventions:
 - Backend API unchanged — `GET /api/agents/runs/{id}` and `GET /api/agents/incidents/{id}/runs` already include `steps[]` with `input_payload`/`output_payload`/`error`/`created_at`/`completed_at`. No schema change, no migration, no dependency added.
 - Existing Playwright `.run-card` selector preserved; a new test opens the newest run after `Run agent analysis` and asserts all 6 deterministic LangGraph step names (`load_incident`, `anomaly_detection`, `evidence_summary`, `correlation`, `validation`, `report`) plus that the `report` step's payload renders.
 - Read-only inspection: expanding a step does NOT re-execute anything; opening the inspector does NOT contact a device. Same guardrails as every prior phase — no execution path, no auth/RBAC, no LLM behavior change.
+
+## Phase 15B — Agent inspector polish: status, duration, copy *(current)*
+
+- New tiny helper `formatDuration(startIso, endIso?)` in `frontend/src/api.ts` (alongside `formatDate` / `relativeAge`): returns `<n> ms` for sub-second deltas, `<n.n> s` otherwise, or `null` when the end timestamp is absent. ~10 lines, no dependency.
+- Run summary appends ` · <duration>` to the header when `run.completed_at` is present. Step heads gain a payload-shape chip (`· input N keys · output M keys`, `· error` suffix when a step recorded an error) so operators can scan run shape without expanding every step.
+- Step badges already use the existing `badge--run-{running,completed,failed}` classes; the chip and duration only add textual context, no new color tokens.
+- The collapsed `final report` block grows a `Copy final report JSON` button that calls `navigator.clipboard.writeText(...)` inside try/catch and renders an inline `Copied.` / `Copy failed.` (`role="status"`, `aria-live="polite"`) that auto-clears after 2 s. Per-run keyed state lets multiple run cards each carry their own copy message independently.
+- Playwright assertions pinned: a duration token (regex `· \d+(\.\d+)? (ms|s)`), at least one step's `input N keys` / `output N keys` summary chip, and the copy button click surfacing EITHER `Copied.` OR `Copy failed.` (regex). Clipboard contents are intentionally NOT sniffed - clipboard permissions vary between headed/headless and a strict assertion would be brittle without serving no useful operator value.
+- Same guardrails as every prior phase — no execution path, no auth/RBAC, no LLM behavior change, no backend API/schema/migration touched, no new dependency.
 
 ## Beyond
 

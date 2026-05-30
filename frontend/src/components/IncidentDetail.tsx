@@ -3,6 +3,7 @@ import {
   ApiError,
   api,
   formatDate,
+  formatDuration,
   shortId,
   type AgentRun,
   type AnomalyFinding,
@@ -90,6 +91,10 @@ export function IncidentDetail({
     note: string
   } | null>(null)
   const [submittingApproval, setSubmittingApproval] = useState(false)
+  // Per-run inline copy feedback. Keyed by run id so multiple cards can carry
+  // their own "Copied." / "Copy failed." message at the same time. Cleared
+  // after 2 s so the run card doesn't grow a permanent status tag.
+  const [copyMsg, setCopyMsg] = useState<Record<string, string>>({})
 
   useEffect(() => {
     let alive = true
@@ -192,6 +197,31 @@ export function IncidentDetail({
     } finally {
       setSubmittingApproval(false)
     }
+  }
+
+  async function copyRunReport(run: AgentRun) {
+    if (!run.output_payload) return
+    const text = JSON.stringify(run.output_payload, null, 2)
+    let msg: string
+    try {
+      await navigator.clipboard.writeText(text)
+      msg = 'Copied.'
+    } catch {
+      // Browsers gate writeText on a secure context + user-initiated event.
+      // The click satisfies the second; localhost + http://localhost:5173 is
+      // a "secure context" per the spec - but headless / permissions denied
+      // can still reject. Surface the failure inline rather than swallowing.
+      msg = 'Copy failed.'
+    }
+    setCopyMsg((prev) => ({ ...prev, [run.id]: msg }))
+    setTimeout(() => {
+      setCopyMsg((prev) => {
+        if (prev[run.id] !== msg) return prev
+        const next = { ...prev }
+        delete next[run.id]
+        return next
+      })
+    }, 2000)
   }
 
   async function runAction(key: ActionKey) {
@@ -446,7 +476,9 @@ export function IncidentDetail({
           <div className="muted">No agent runs yet. Click "Run agent analysis".</div>
         )}
         {runs &&
-          runs.map((run) => (
+          runs.map((run) => {
+            const runDuration = formatDuration(run.created_at, run.completed_at)
+            return (
             <details key={run.id} className="run-card">
               <summary>
                 <span
@@ -462,6 +494,11 @@ export function IncidentDetail({
                     {' '}· completed {formatDate(run.completed_at)}
                   </span>
                 )}
+                {runDuration && (
+                  <span className="muted run-card__duration">
+                    {' '}· {runDuration}
+                  </span>
+                )}
                 <span className="muted"> · {run.steps.length} steps</span>
               </summary>
               <ol className="run-card__steps" aria-label="agent run steps">
@@ -469,16 +506,24 @@ export function IncidentDetail({
                   // {} is truthy, so a step with input_payload={} would
                   // otherwise skip the empty fallback. Treat "no keys" the
                   // same as null for inspector purposes.
-                  const hasInput = !!(
-                    s.input_payload &&
-                    Object.keys(s.input_payload).length > 0
-                  )
-                  const hasOutput = !!(
-                    s.output_payload &&
-                    Object.keys(s.output_payload).length > 0
-                  )
+                  const inputKeys = s.input_payload
+                    ? Object.keys(s.input_payload).length
+                    : 0
+                  const outputKeys = s.output_payload
+                    ? Object.keys(s.output_payload).length
+                    : 0
+                  const hasInput = inputKeys > 0
+                  const hasOutput = outputKeys > 0
                   const hasError = !!s.error
                   const isEmpty = !hasInput && !hasOutput && !hasError
+                  const headSummary: string[] = []
+                  if (hasInput) headSummary.push(`input ${inputKeys} keys`)
+                  if (hasOutput) headSummary.push(`output ${outputKeys} keys`)
+                  if (hasError) headSummary.push('error')
+                  const stepDuration = formatDuration(
+                    s.created_at,
+                    s.completed_at,
+                  )
                   return (
                     <li key={s.id} className="run-card__step">
                       <details>
@@ -490,11 +535,17 @@ export function IncidentDetail({
                           </span>{' '}
                           <code className="run-card__step-name">
                             {s.step_name}
-                          </code>{' '}
+                          </code>
+                          {headSummary.length > 0 && (
+                            <span className="muted run-card__step-summary">
+                              {' '}· {headSummary.join(' · ')}
+                            </span>
+                          )}{' '}
                           <span className="muted run-card__step-when">
                             started {formatDate(s.created_at)}
                             {s.completed_at &&
                               ` · completed ${formatDate(s.completed_at)}`}
+                            {stepDuration && ` · ${stepDuration}`}
                           </span>
                         </summary>
                         <div className="run-card__step-body">
@@ -537,11 +588,30 @@ export function IncidentDetail({
                   <pre className="run-card__report">
                     {JSON.stringify(run.output_payload, null, 2)}
                   </pre>
+                  <div className="run-card__copy-row">
+                    <button
+                      type="button"
+                      className="btn btn--action btn--small"
+                      onClick={() => void copyRunReport(run)}
+                    >
+                      Copy final report JSON
+                    </button>
+                    {copyMsg[run.id] && (
+                      <span
+                        className="muted run-card__copy-msg"
+                        role="status"
+                        aria-live="polite"
+                      >
+                        {copyMsg[run.id]}
+                      </span>
+                    )}
+                  </div>
                 </details>
               )}
               {run.error && <div className="error-banner">{run.error}</div>}
             </details>
-          ))}
+          )
+        })}
       </section>
 
       <section className="detail-section">

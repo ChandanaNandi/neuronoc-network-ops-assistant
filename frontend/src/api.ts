@@ -308,6 +308,24 @@ export function formatDate(iso: string): string {
   return d.toLocaleString()
 }
 
+// Format the elapsed time between two ISO timestamps. Returns null if the
+// end timestamp is absent (the inspector falls back to showing only the start
+// time in that case) or if either value fails to parse. Sub-second durations
+// render as `<n> ms`, anything past 1 s as `<n.n> s`. Kept tiny on purpose -
+// there's no need for a full units library here.
+export function formatDuration(
+  startIso: string,
+  endIso?: string | null,
+): string | null {
+  if (!endIso) return null
+  const start = new Date(startIso).getTime()
+  const end = new Date(endIso).getTime()
+  if (Number.isNaN(start) || Number.isNaN(end)) return null
+  const ms = Math.max(0, end - start)
+  if (ms < 1000) return `${ms} ms`
+  return `${(ms / 1000).toFixed(1)} s`
+}
+
 export function relativeAge(iso: string): string {
   const then = new Date(iso).getTime()
   if (Number.isNaN(then)) return iso
