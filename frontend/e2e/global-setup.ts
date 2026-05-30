@@ -11,12 +11,14 @@ export default async function globalSetup() {
   console.log('[e2e] seeding all scenarios...')
   execSync(`${sim} --scenario all`, { stdio: 'inherit' })
 
-  // Phase 13A: seed a local operator the approval test can pick from the
-  // dropdown. Idempotent by display_name so re-runs are safe.
-  console.log('[e2e] seeding local-operator...')
+  // Phase 13A: seed a local operator. Phase 23: also set a password so
+  // the e2e suite can log in through the new /api/auth/login flow.
+  // Re-runs are idempotent — the seed CLI updates the password hash
+  // in place when --password is supplied.
+  console.log('[e2e] seeding local-operator (with Phase 23 password)...')
   execSync(
     'uv --directory ../backend run python -m app.operators.seed ' +
-      '--name local-operator --role admin',
+      '--name local-operator --role admin --password demo-password',
     { stdio: 'inherit' },
   )
 

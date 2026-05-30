@@ -122,7 +122,10 @@ def test_seed_cli_updates_role_on_rerun(
     capsys.readouterr()
     seed_module.main(["--name", "role-change-test", "--role", "admin"])
     out = capsys.readouterr().out
-    assert "updated role" in out
+    # Phase 23 reworded the CLI output (now reports `(role->admin)` etc.
+    # so multi-change summaries fit in one line); test the meaningful
+    # substring rather than the exact prior phrase.
+    assert "role->admin" in out
 
     op = db_session.scalar(
         select(Operator).where(Operator.display_name == "role-change-test")

@@ -5,10 +5,10 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.anomaly.engine import IncidentNotFoundError
-from app.db.models import ApprovalStatus, Incident, Recommendation
+from app.auth.dependencies import require_role
+from app.db.models import ApprovalStatus, Incident, Operator, Recommendation
 from app.db.session import get_db
 from app.remediation.planner import (
-    OperatorNotFoundError,
     RecommendationNotFoundError,
     WrongRecommendationTypeError,
     build_remediation_plan,
@@ -19,6 +19,12 @@ from app.schemas.incidents import ApprovalRequest, RecommendationRead
 from app.schemas.remediation import RemediationPlan
 
 router = APIRouter(prefix="/api/remediation", tags=["remediation"])
+
+# Phase 23: approval and rejection are admin-only. Other endpoints in
+# this router (plan generation, plan listing) remain unauthenticated
+# per scope — only the write-state actions on existing plans require
+# auth.
+_require_admin = require_role("admin")
 
 
 @router.post(
@@ -45,14 +51,14 @@ def _apply_approval(
     recommendation_id: UUID,
     status_value: ApprovalStatus,
     payload: ApprovalRequest,
+    operator: Operator,
 ) -> Recommendation:
     try:
         return set_recommendation_approval(
             db,
             recommendation_id,
             status_value,
-            operator_name=payload.operator_name,
-            operator_id=payload.operator_id,
+            operator=operator,
             note=payload.note,
         )
     except RecommendationNotFoundError as exc:
@@ -62,10 +68,6 @@ def _apply_approval(
     except WrongRecommendationTypeError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
-    except OperatorNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
 
 
@@ -77,12 +79,24 @@ def approve_recommendation(
     recommendation_id: UUID,
     payload: ApprovalRequest,
     db: Session = Depends(get_db),
+    current_operator: Operator = Depends(_require_admin),
 ) -> Recommendation:
-    """Mark a remediation plan as APPROVED. Records intent only - no command
-    is run, no device is contacted. Idempotent same-state calls update the
-    operator/timestamp/note so the latest decision is captured."""
+    """Mark a remediation plan as APPROVED. Records intent only — no
+    command is run, no device is contacted. Idempotent same-state calls
+    update the operator/timestamp/note so the latest decision is
+    captured.
+
+    Phase 23: requires bearer-token auth (401 if missing/invalid) AND
+    role `admin` (403 if authenticated as `operator`). The approving
+    operator's identity comes from the authenticated session, NOT from
+    the request body (body carries `note` only).
+    """
     return _apply_approval(
-        db, recommendation_id, ApprovalStatus.approved, payload
+        db,
+        recommendation_id,
+        ApprovalStatus.approved,
+        payload,
+        current_operator,
     )
 
 
@@ -94,11 +108,17 @@ def reject_recommendation(
     recommendation_id: UUID,
     payload: ApprovalRequest,
     db: Session = Depends(get_db),
+    current_operator: Operator = Depends(_require_admin),
 ) -> Recommendation:
-    """Mark a remediation plan as REJECTED. Same safety contract as approve:
-    records intent only, never executes anything."""
+    """Mark a remediation plan as REJECTED. Same safety contract as
+    approve: records intent only, never executes anything. Same Phase 23
+    auth/RBAC requirements."""
     return _apply_approval(
-        db, recommendation_id, ApprovalStatus.rejected, payload
+        db,
+        recommendation_id,
+        ApprovalStatus.rejected,
+        payload,
+        current_operator,
     )
 
 

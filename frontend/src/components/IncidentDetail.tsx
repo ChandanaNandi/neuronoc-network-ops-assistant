@@ -25,10 +25,15 @@ interface IncidentDetailProps {
   // and the displayed RCAExplanation survives across re-renders.
   onPersistedMutation: () => void
   onError: (msg: string | null) => void
-  // Phase 13B: operators are owned by App so the OperatorsPanel and this
-  // approval form see the same list. `null` means loading or load failed -
-  // the form falls back cleanly to the free-form name input either way.
+  // Phase 13B: operators are owned by App. Phase 23 kept this prop in
+  // case future UI wants the list, but the approval form no longer uses
+  // it — approval identity now comes from `currentOperator` (the
+  // authenticated session), not from a dropdown selection.
   operators: Operator[] | null
+  // Phase 23: the bearer-token-authenticated operator (or null when
+  // logged out). Drives whether the approval form can be submitted at
+  // all (must be logged in) and whether the role permits it (admin).
+  currentOperator: Operator | null
 }
 
 type ActionKey = 'agent' | 'rca' | 'plan'
@@ -66,7 +71,8 @@ export function IncidentDetail({
   refreshTrigger,
   onPersistedMutation,
   onError,
-  operators,
+  operators: _operators,
+  currentOperator,
 }: IncidentDetailProps) {
   const [incident, setIncident] = useState<Incident | null>(null)
   const [findings, setFindings] = useState<AnomalyFinding[] | null>(null)
@@ -79,19 +85,21 @@ export function IncidentDetail({
   const [running, setRunning] = useState<ActionKey | null>(null)
   const [actionMsg, setActionMsg] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  // At most one inline approval form is open at a time. The draft captures
-  // which plan it belongs to, the kind of decision, the chosen operator id
-  // (or empty string when using the manual name fallback), the typed-in name
-  // fallback, and the optional note. Phase 10B replaced the Phase 10A
-  // window.prompt flow; Phase 13A adds operator_id.
+  // At most one inline approval form is open at a time. Phase 23
+  // simplified this: the approving identity comes from `currentOperator`
+  // (bearer-token session), so the draft now carries only the inline
+  // note. No operator dropdown, no free-form name field.
   const [approvalDraft, setApprovalDraft] = useState<{
     recId: string
     kind: 'approve' | 'reject'
-    operatorId: string
-    operatorName: string
     note: string
   } | null>(null)
   const [submittingApproval, setSubmittingApproval] = useState(false)
+
+  // Phase 23 helpers — these gate the Approve/Reject buttons and the
+  // form's submit button. They're consumed in the JSX below.
+  const isLoggedIn = currentOperator !== null
+  const isAdmin = currentOperator?.role === 'admin'
   // Per-run inline copy feedback. Keyed by run id so multiple cards can carry
   // their own "Copied." / "Copy failed." message at the same time. Cleared
   // after 2 s so the run card doesn't grow a permanent status tag.
@@ -165,8 +173,6 @@ export function IncidentDetail({
     setApprovalDraft({
       recId: recommendationId,
       kind,
-      operatorId: '',
-      operatorName: '',
       note: '',
     })
   }
@@ -175,27 +181,15 @@ export function IncidentDetail({
     setApprovalDraft(null)
   }
 
-  function draftHasIdentity(d: NonNullable<typeof approvalDraft>) {
-    // operator_id wins when chosen; otherwise the manual name must be non-empty.
-    return Boolean(d.operatorId || d.operatorName.trim())
-  }
-
   async function submitApprovalForm() {
     if (!approvalDraft) return
-    if (!draftHasIdentity(approvalDraft)) return // submit is disabled here
+    // Phase 23: backend enforces auth + admin role. We also gate at the
+    // UI layer so the submit button can stay disabled / explanatory.
+    if (!isLoggedIn || !isAdmin) return
 
     setSubmittingApproval(true)
     try {
-      const body =
-        approvalDraft.operatorId
-          ? {
-              operator_id: approvalDraft.operatorId,
-              note: approvalDraft.note.trim() || null,
-            }
-          : {
-              operator_name: approvalDraft.operatorName.trim(),
-              note: approvalDraft.note.trim() || null,
-            }
+      const body = { note: approvalDraft.note.trim() || null }
       if (approvalDraft.kind === 'approve') {
         await api.approveRecommendation(approvalDraft.recId, body)
       } else {
@@ -762,60 +756,39 @@ export function IncidentDetail({
                     Confirm {approvalDraft.kind} - records intent only;
                     no execution.
                   </div>
-                  {operators && operators.length > 0 && (
-                    <label className="approval-form__field">
+                  {/* Phase 23: identity comes from the authenticated
+                      session. No operator dropdown, no free-form name
+                      input. The header below makes the attribution
+                      explicit so the operator sees who they're
+                      signing as. */}
+                  {currentOperator ? (
+                    <div className="approval-form__identity">
                       <span className="approval-form__label">
-                        Operator
+                        Approving as
+                      </span>{' '}
+                      <strong>{currentOperator.display_name}</strong>{' '}
+                      <span className="muted">
+                        [{currentOperator.role}]
                       </span>
-                      <select
-                        className="approval-form__input"
-                        aria-label="operator"
-                        value={approvalDraft.operatorId}
-                        onChange={(e) =>
-                          setApprovalDraft({
-                            ...approvalDraft,
-                            operatorId: e.target.value,
-                          })
-                        }
-                        disabled={submittingApproval}
-                      >
-                        <option value="">— select an operator —</option>
-                        {operators.map((o) => (
-                          <option key={o.id} value={o.id}>
-                            {o.display_name} ({o.role})
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    </div>
+                  ) : (
+                    <div
+                      className="approval-form__identity muted"
+                      role="alert"
+                    >
+                      Not logged in — approval requires an authenticated
+                      operator (use the login panel above).
+                    </div>
                   )}
-                  <label className="approval-form__field">
-                    <span className="approval-form__label">
-                      {operators && operators.length > 0
-                        ? 'Or type a custom operator name'
-                        : 'Operator name'}
-                    </span>
-                    <input
-                      type="text"
-                      className="approval-form__input"
-                      aria-label="operator name"
-                      autoFocus={!operators || operators.length === 0}
-                      value={approvalDraft.operatorName}
-                      onChange={(e) =>
-                        setApprovalDraft({
-                          ...approvalDraft,
-                          operatorName: e.target.value,
-                        })
-                      }
-                      disabled={
-                        submittingApproval || Boolean(approvalDraft.operatorId)
-                      }
-                      placeholder={
-                        approvalDraft.operatorId
-                          ? '(disabled while an operator is selected)'
-                          : ''
-                      }
-                    />
-                  </label>
+                  {currentOperator && !isAdmin && (
+                    <div
+                      className="approval-form__identity muted"
+                      role="alert"
+                    >
+                      Your role is <code>{currentOperator.role}</code>;
+                      approval requires role <code>admin</code>.
+                    </div>
+                  )}
                   <label className="approval-form__field">
                     <span className="approval-form__label">
                       Note (optional)
@@ -839,7 +812,14 @@ export function IncidentDetail({
                       type="submit"
                       className="btn btn--primary btn--action"
                       disabled={
-                        !draftHasIdentity(approvalDraft) || submittingApproval
+                        !isLoggedIn || !isAdmin || submittingApproval
+                      }
+                      title={
+                        !isLoggedIn
+                          ? 'Log in first'
+                          : !isAdmin
+                            ? 'Requires admin role'
+                            : ''
                       }
                     >
                       {submittingApproval

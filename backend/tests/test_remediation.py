@@ -236,9 +236,53 @@ def test_new_plan_defaults_to_pending_approval(db_session: Session) -> None:
     assert rec.approval_note is None
 
 
+def _seed_operator_with_password(
+    db_session: Session,
+    *,
+    display_name: str,
+    role: str,
+    password: str = "demo-password",
+):
+    """Insert an Operator row directly with a hashed password. Returns
+    the row; caller can then POST /api/auth/login to obtain a token."""
+    from app.auth.hashing import hash_password
+    from app.db.models import Operator
+
+    op = Operator(
+        display_name=display_name,
+        role=role,
+        password_hash=hash_password(password),
+    )
+    db_session.add(op)
+    db_session.flush()
+    return op
+
+
+def _login_as(client: TestClient, display_name: str, password: str = "demo-password") -> dict[str, str]:
+    """Log in via the real /api/auth/login endpoint and return the
+    bearer-token Authorization header dict."""
+    resp = client.post(
+        "/api/auth/login",
+        json={"display_name": display_name, "password": password},
+    )
+    assert resp.status_code == 200, resp.text
+    return {"Authorization": f"Bearer {resp.json()['token']}"}
+
+
+def _admin_headers(client: TestClient, db_session: Session, *, name: str = "admin-tester") -> dict[str, str]:
+    """Convenience: create an admin operator with a password + return its
+    bearer auth headers. Each call mints a fresh operator inside the
+    test's savepoint, so re-use across tests in the same suite is fine."""
+    _seed_operator_with_password(db_session, display_name=name, role="admin")
+    return _login_as(client, name)
+
+
 def test_api_approve_plan_records_intent(
     client: TestClient, db_session: Session
 ) -> None:
+    """Phase 23 update: approve via authenticated admin. Audit fields
+    come from the bearer-token session, not the request body."""
+    headers = _admin_headers(client, db_session, name="alice")
     incident = _seed(db_session, "bgp_neighbor_down")
     plan_resp = client.post(f"/api/remediation/incidents/{incident.id}/plan")
     assert plan_resp.status_code == 201
@@ -249,12 +293,15 @@ def test_api_approve_plan_records_intent(
 
     response = client.post(
         f"/api/remediation/recommendations/{rec_id}/approve",
-        json={"operator_name": "alice", "note": "approved during change window"},
+        json={"note": "approved during change window"},
+        headers=headers,
     )
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["approval_status"] == "approved"
+    # Audit fields populated from the authenticated session.
     assert body["approved_by"] == "alice"
+    assert body["approved_by_operator_id"] is not None
     assert body["approval_note"] == "approved during change window"
     assert body["approved_at"] is not None
     # requires_approval flag is unchanged - it's a contract, not a state.
@@ -264,6 +311,7 @@ def test_api_approve_plan_records_intent(
 def test_api_reject_plan_records_intent(
     client: TestClient, db_session: Session
 ) -> None:
+    headers = _admin_headers(client, db_session, name="bob")
     incident = _seed(db_session, "bgp_neighbor_down")
     client.post(f"/api/remediation/incidents/{incident.id}/plan")
     rec_id = client.get(
@@ -272,7 +320,8 @@ def test_api_reject_plan_records_intent(
 
     response = client.post(
         f"/api/remediation/recommendations/{rec_id}/reject",
-        json={"operator_name": "bob", "note": "wrong scope, see ticket NN-42"},
+        json={"note": "wrong scope, see ticket NN-42"},
+        headers=headers,
     )
     assert response.status_code == 200, response.text
     body = response.json()
@@ -283,6 +332,11 @@ def test_api_reject_plan_records_intent(
 def test_api_idempotent_reapprove_updates_metadata(
     client: TestClient, db_session: Session
 ) -> None:
+    """Same auth re-approving keeps `approved_by` stable but updates
+    the timestamp + note. Different authenticated admin overwrites
+    `approved_by` to the new identity."""
+    alice_headers = _admin_headers(client, db_session, name="alice")
+    carol_headers = _admin_headers(client, db_session, name="carol")
     incident = _seed(db_session, "bgp_neighbor_down")
     client.post(f"/api/remediation/incidents/{incident.id}/plan")
     rec_id = client.get(
@@ -291,11 +345,13 @@ def test_api_idempotent_reapprove_updates_metadata(
 
     client.post(
         f"/api/remediation/recommendations/{rec_id}/approve",
-        json={"operator_name": "alice", "note": "first"},
+        json={"note": "first"},
+        headers=alice_headers,
     )
     response = client.post(
         f"/api/remediation/recommendations/{rec_id}/approve",
-        json={"operator_name": "carol", "note": "second"},
+        json={"note": "second"},
+        headers=carol_headers,
     )
     assert response.status_code == 200
     body = response.json()
@@ -304,10 +360,14 @@ def test_api_idempotent_reapprove_updates_metadata(
     assert body["approval_note"] == "second"
 
 
-def test_api_approve_404_for_missing_recommendation(client: TestClient) -> None:
+def test_api_approve_404_for_missing_recommendation(
+    client: TestClient, db_session: Session
+) -> None:
+    headers = _admin_headers(client, db_session)
     response = client.post(
         f"/api/remediation/recommendations/{uuid4()}/approve",
-        json={"operator_name": "alice"},
+        json={},
+        headers=headers,
     )
     assert response.status_code == 404
 
@@ -315,8 +375,7 @@ def test_api_approve_404_for_missing_recommendation(client: TestClient) -> None:
 def test_api_approve_400_for_non_remediation_recommendation(
     client: TestClient, db_session: Session
 ) -> None:
-    # Create a recommendation with a different type, directly via the
-    # incidents API to bypass the planner.
+    headers = _admin_headers(client, db_session)
     incident = _seed(db_session, "bgp_neighbor_down")
     rec_resp = client.post(
         f"/api/incidents/{incident.id}/recommendations",
@@ -332,76 +391,20 @@ def test_api_approve_400_for_non_remediation_recommendation(
 
     response = client.post(
         f"/api/remediation/recommendations/{rec_id}/approve",
-        json={"operator_name": "alice"},
+        json={},
+        headers=headers,
     )
     assert response.status_code == 400
     assert "remediation_plan" in response.json()["detail"]
 
 
-def test_api_approve_requires_some_identity(
+# ---------- Phase 23: auth + RBAC enforcement on approval/reject ----------
+
+
+def test_api_approve_unauthenticated_returns_401(
     client: TestClient, db_session: Session
 ) -> None:
-    """Phase 13A: at least one of operator_name / operator_id is required."""
-    incident = _seed(db_session, "bgp_neighbor_down")
-    client.post(f"/api/remediation/incidents/{incident.id}/plan")
-    rec_id = client.get(
-        f"/api/remediation/incidents/{incident.id}/plans"
-    ).json()[0]["id"]
-
-    # both missing -> 422
-    assert (
-        client.post(
-            f"/api/remediation/recommendations/{rec_id}/approve",
-            json={"note": "noop"},
-        ).status_code
-        == 422
-    )
-    # empty operator_name -> 422 (Pydantic min_length=1)
-    assert (
-        client.post(
-            f"/api/remediation/recommendations/{rec_id}/approve",
-            json={"operator_name": ""},
-        ).status_code
-        == 422
-    )
-
-
-# ---------- Phase 13A: approval with operator_id ----------
-
-
-def test_api_approve_with_operator_id_persists_display_name_and_fk(
-    client: TestClient, db_session: Session
-) -> None:
-    incident = _seed(db_session, "bgp_neighbor_down")
-    client.post(f"/api/remediation/incidents/{incident.id}/plan")
-    rec_id = client.get(
-        f"/api/remediation/incidents/{incident.id}/plans"
-    ).json()[0]["id"]
-
-    op_resp = client.post(
-        "/api/operators",
-        json={"display_name": "approver-13a", "role": "admin"},
-    )
-    assert op_resp.status_code == 201
-    op_id = op_resp.json()["id"]
-
-    response = client.post(
-        f"/api/remediation/recommendations/{rec_id}/approve",
-        json={"operator_id": op_id, "note": "via Phase 13A id-based identity"},
-    )
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["approval_status"] == "approved"
-    assert body["approved_by"] == "approver-13a"  # resolved from operator row
-    assert body["approved_by_operator_id"] == op_id  # FK persisted for audit
-    assert body["approval_note"] == "via Phase 13A id-based identity"
-
-
-def test_api_approve_legacy_operator_name_still_works(
-    client: TestClient, db_session: Session
-) -> None:
-    """Backward-compat check: scripts / CLIs that send only `operator_name`
-    must keep working after Phase 13A."""
+    """No `Authorization` header -> 401, regardless of body shape."""
     incident = _seed(db_session, "bgp_neighbor_down")
     client.post(f"/api/remediation/incidents/{incident.id}/plan")
     rec_id = client.get(
@@ -410,75 +413,114 @@ def test_api_approve_legacy_operator_name_still_works(
 
     response = client.post(
         f"/api/remediation/recommendations/{rec_id}/approve",
-        json={"operator_name": "legacy-cli", "note": "from a script"},
+        json={"note": "trying to slip in"},
     )
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["approved_by"] == "legacy-cli"
-    assert body["approved_by_operator_id"] is None  # no FK when no id supplied
+    assert response.status_code == 401
 
 
-def test_api_approve_422_when_both_operator_id_and_name_supplied(
+def test_api_reject_unauthenticated_returns_401(
     client: TestClient, db_session: Session
 ) -> None:
-    """Phase 13A XOR enforcement: the approval payload accepts exactly one of
-    operator_id / operator_name. Sending both must be rejected at the schema
-    layer (422) and must not mutate the recommendation row."""
     incident = _seed(db_session, "bgp_neighbor_down")
     client.post(f"/api/remediation/incidents/{incident.id}/plan")
     rec_id = client.get(
         f"/api/remediation/incidents/{incident.id}/plans"
     ).json()[0]["id"]
 
-    op_resp = client.post(
-        "/api/operators",
-        json={"display_name": "xor-test", "role": "operator"},
+    response = client.post(
+        f"/api/remediation/recommendations/{rec_id}/reject",
+        json={"note": "trying to slip in"},
     )
-    assert op_resp.status_code == 201
-    op_id = op_resp.json()["id"]
+    assert response.status_code == 401
+
+
+def test_api_approve_with_non_admin_role_returns_403(
+    client: TestClient, db_session: Session
+) -> None:
+    """Authenticated as role=operator (not admin) -> 403, NOT 401."""
+    _seed_operator_with_password(
+        db_session, display_name="non-admin", role="operator"
+    )
+    headers = _login_as(client, "non-admin")
+    incident = _seed(db_session, "bgp_neighbor_down")
+    client.post(f"/api/remediation/incidents/{incident.id}/plan")
+    rec_id = client.get(
+        f"/api/remediation/incidents/{incident.id}/plans"
+    ).json()[0]["id"]
 
     response = client.post(
         f"/api/remediation/recommendations/{rec_id}/approve",
-        json={
-            "operator_id": op_id,
-            "operator_name": "shouldnt-be-here",
-            "note": "both supplied",
-        },
+        json={"note": "by an operator role"},
+        headers=headers,
     )
-    assert response.status_code == 422
+    assert response.status_code == 403
+    assert "admin" in response.json()["detail"]
 
-    # Confirm no mutation: re-read the row from the DB and verify the
-    # approval columns are still in their initial pending state.
+
+def test_api_reject_with_non_admin_role_returns_403(
+    client: TestClient, db_session: Session
+) -> None:
+    _seed_operator_with_password(
+        db_session, display_name="non-admin-rej", role="operator"
+    )
+    headers = _login_as(client, "non-admin-rej")
+    incident = _seed(db_session, "bgp_neighbor_down")
+    client.post(f"/api/remediation/incidents/{incident.id}/plan")
+    rec_id = client.get(
+        f"/api/remediation/incidents/{incident.id}/plans"
+    ).json()[0]["id"]
+
+    response = client.post(
+        f"/api/remediation/recommendations/{rec_id}/reject",
+        json={},
+        headers=headers,
+    )
+    assert response.status_code == 403
+
+
+def test_api_approve_body_with_legacy_identity_fields_returns_422(
+    client: TestClient, db_session: Session
+) -> None:
+    """Phase 23 hardening: stale callers sending `operator_name` or
+    `operator_id` in the body must be rejected by Pydantic's
+    extra='forbid' on `ApprovalRequest`. The approving identity comes
+    from the authenticated session, period."""
+    headers = _admin_headers(client, db_session)
+    incident = _seed(db_session, "bgp_neighbor_down")
+    client.post(f"/api/remediation/incidents/{incident.id}/plan")
+    rec_id = client.get(
+        f"/api/remediation/incidents/{incident.id}/plans"
+    ).json()[0]["id"]
+
+    legacy_name_resp = client.post(
+        f"/api/remediation/recommendations/{rec_id}/approve",
+        json={"operator_name": "legacy-cli", "note": "from a stale script"},
+        headers=headers,
+    )
+    assert legacy_name_resp.status_code == 422
+
+    legacy_id_resp = client.post(
+        f"/api/remediation/recommendations/{rec_id}/approve",
+        json={"operator_id": str(uuid4()), "note": "from a stale script"},
+        headers=headers,
+    )
+    assert legacy_id_resp.status_code == 422
+
+    # No mutation occurred — row stays pending.
     db_session.expire_all()
     rec = db_session.get(Recommendation, UUID(rec_id))
     assert rec is not None
     assert rec.approval_status == "pending"
     assert rec.approved_by is None
-    assert rec.approved_by_operator_id is None
-    assert rec.approved_at is None
 
 
-def test_planner_helper_rejects_both_identity_fields(
-    db_session: Session,
-) -> None:
-    """Mirror of the schema-level XOR check at the helper layer, for direct
-    callers that don't go through the FastAPI/Pydantic request layer."""
-    from app.db.models import ApprovalStatus
-    from app.remediation.planner import set_recommendation_approval
-
-    with pytest.raises(ValueError, match="exactly one"):
-        set_recommendation_approval(
-            db_session,
-            recommendation_id=uuid4(),  # never reached - guard runs first
-            status=ApprovalStatus.approved,
-            operator_id=uuid4(),
-            operator_name="alice",
-        )
-
-
-def test_api_approve_404_for_unknown_operator_id(
+def test_api_approve_audit_fields_come_from_auth_not_body(
     client: TestClient, db_session: Session
 ) -> None:
+    """Even a perfectly-shaped body cannot override the authenticated
+    operator. Phase 13A's legacy free-form `operator_name` path is
+    closed: the row's audit fields reflect the bearer-token identity."""
+    headers = _admin_headers(client, db_session, name="real-admin")
     incident = _seed(db_session, "bgp_neighbor_down")
     client.post(f"/api/remediation/incidents/{incident.id}/plan")
     rec_id = client.get(
@@ -487,10 +529,12 @@ def test_api_approve_404_for_unknown_operator_id(
 
     response = client.post(
         f"/api/remediation/recommendations/{rec_id}/approve",
-        json={"operator_id": str(uuid4())},
+        json={"note": "happy path"},
+        headers=headers,
     )
-    assert response.status_code == 404
-    assert "operator" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json()["approved_by"] == "real-admin"
+    assert response.json()["approved_by_operator_id"] is not None
 
 
 # ---------- CLI ----------

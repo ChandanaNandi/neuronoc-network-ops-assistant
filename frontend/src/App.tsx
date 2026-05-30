@@ -3,11 +3,14 @@ import './App.css'
 import {
   ApiError,
   api,
+  getAuthToken,
+  setAuthToken,
   type LabBgpCollectionSummary,
   type Operator,
 } from './api'
 import { IncidentDetail } from './components/IncidentDetail'
 import { IncidentList } from './components/IncidentList'
+import { LoginPanel } from './components/LoginPanel'
 import { OperatorsPanel } from './components/OperatorsPanel'
 import { RunbooksPanel } from './components/RunbooksPanel'
 import { StatusGrid } from './components/StatusGrid'
@@ -47,6 +50,23 @@ export default function App() {
   useEffect(() => {
     void refreshOperators()
   }, [refreshOperators])
+
+  // Phase 23: authenticated operator (from bearer-token session). On
+  // mount, if a token survived in localStorage we call /api/auth/me to
+  // hydrate. Stale/expired tokens get cleared silently — the operator
+  // sees the login form.
+  const [currentOperator, setCurrentOperator] = useState<Operator | null>(null)
+  useEffect(() => {
+    if (getAuthToken() === null) return
+    void api
+      .me()
+      .then((op) => setCurrentOperator(op))
+      .catch(() => {
+        // Bad/expired token. Clear it so the LoginPanel renders the form.
+        setAuthToken(null)
+        setCurrentOperator(null)
+      })
+  }, [])
 
   const refreshAll = useCallback(() => {
     setListRefresh((x) => x + 1)
@@ -155,6 +175,12 @@ export default function App() {
         lastLabCollection={lastLabCollection}
       />
 
+      <LoginPanel
+        currentOperator={currentOperator}
+        onLoggedIn={setCurrentOperator}
+        onLoggedOut={() => setCurrentOperator(null)}
+      />
+
       <OperatorsPanel
         operators={operators}
         onRefresh={refreshOperators}
@@ -179,6 +205,7 @@ export default function App() {
               onPersistedMutation={onPersistedMutation}
               onError={setError}
               operators={operators}
+              currentOperator={currentOperator}
             />
           ) : (
             <div className="empty-state">

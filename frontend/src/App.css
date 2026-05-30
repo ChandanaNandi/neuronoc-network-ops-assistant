@@ -759,6 +759,54 @@
   font-style: italic;
 }
 
+/* Phase 23 — minimal login panel sitting between StatusGrid and OperatorsPanel. */
+
+.login-panel {
+  margin: 0 1.5rem 0.75rem;
+  background: #151a21;
+  border: 1px solid #1f242b;
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.login-panel__title {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #8b95a3;
+}
+
+.login-panel__name {
+  font-size: 0.85rem;
+}
+
+.login-panel__form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.login-panel__form .approval-form__input {
+  flex: 0 1 180px;
+  min-width: 0;
+}
+
+.login-panel__error {
+  color: #f3a3a3;
+  font-size: 0.78rem;
+  font-style: italic;
+}
+
+.approval-form__identity {
+  font-size: 0.78rem;
+  margin-bottom: 0.4rem;
+}
+
 /* Phase 17B runbook search panel — mirrors the OperatorsPanel layout. */
 
 .runbooks-panel {

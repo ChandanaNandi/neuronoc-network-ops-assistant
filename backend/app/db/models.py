@@ -288,11 +288,13 @@ class AgentStep(Base):
 
 
 class Operator(Base):
-    """Phase 13A minimal local identity row.
+    """Phase 13A minimal local identity row, upgraded in Phase 23 with
+    optional `password_hash` for local login.
 
-    NOT a production auth subject. No password, no token, no session. The
-    `display_name` is a human-readable label used in approval audit trails.
-    Roles are advisory only - no RBAC enforcement is wired anywhere yet.
+    Local dev / e2e auth — NOT a production auth subject. Phase 23 wires
+    `password_hash` + an `operator_sessions` table behind bearer tokens
+    for the approval flow's RBAC story. Production should swap in a real
+    identity provider (SSO/SAML/OAuth).
     """
 
     __tablename__ = "operators"
@@ -312,8 +314,48 @@ class Operator(Base):
         default=OperatorRole.operator.value,
         server_default=text("'operator'"),
     )
+    # Phase 23: nullable so operators created before the migration (or
+    # via legacy CLI without --password) remain representable; they just
+    # can't log in until a password is set.
+    password_hash: Mapped[str | None] = mapped_column(
+        String(256), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class OperatorSession(Base):
+    """Phase 23 bearer-token session row.
+
+    One row per active login. Token is `secrets.token_urlsafe(32)` (43
+    chars; opaque). Expiry is a hard ceiling — clients holding an
+    expired token get 401. Deleting an operator cascades sessions; the
+    token column is unique + indexed for O(log n) lookup.
+    """
+
+    __tablename__ = "operator_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    operator_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("operators.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    token: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )
 
 

@@ -130,11 +130,22 @@ export interface Recommendation {
 }
 
 export interface ApprovalRequest {
-  // Phase 13A: prefer operator_id (resolves to display_name + audit FK).
-  // operator_name kept for backward compat with CLI/script callers.
-  operator_id?: string | null
-  operator_name?: string | null
+  // Phase 23: body carries `note` only. The approving operator's
+  // identity comes from the authenticated bearer-token session, not
+  // from a submitted field. `extra="forbid"` on the backend means
+  // legacy `operator_id` / `operator_name` would 422.
   note?: string | null
+}
+
+// Phase 23 auth shapes — mirror app/schemas/auth.py + operators.py.
+export interface LoginRequest {
+  display_name: string
+  password: string
+}
+
+export interface LoginResponse {
+  token: string
+  operator: Operator
 }
 
 export interface RemediationPlan {
@@ -279,13 +290,59 @@ export class ApiError extends Error {
   }
 }
 
+// Phase 23: a single bearer token, kept in-memory and mirrored into
+// localStorage so a page reload keeps the operator logged in. This is
+// dev-appropriate local auth; production deployments should swap in a
+// real identity provider (SSO / SAML / OAuth) and likely move the token
+// to a HttpOnly cookie. Documented in backend/README.md.
+const AUTH_TOKEN_KEY = 'neuronoc_auth_token'
+let _authToken: string | null = null
+
+function _readPersistedToken(): string | null {
+  try {
+    return window.localStorage.getItem(AUTH_TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
+// Hydrate on module load so a refresh keeps the user logged in.
+_authToken = _readPersistedToken()
+
+export function setAuthToken(token: string | null): void {
+  _authToken = token
+  try {
+    if (token === null) {
+      window.localStorage.removeItem(AUTH_TOKEN_KEY)
+    } else {
+      window.localStorage.setItem(AUTH_TOKEN_KEY, token)
+    }
+  } catch {
+    // localStorage may be unavailable (e.g. Safari private mode). In-memory
+    // state still works for the rest of the session.
+  }
+}
+
+export function getAuthToken(): string | null {
+  return _authToken
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
+  // Phase 23: inject the bearer token on every request when one is
+  // present. The backend ignores it on endpoints that don't require
+  // auth, so this is safe for all calls.
+  let finalInit: RequestInit | undefined = init
+  if (_authToken !== null) {
+    const headers = new Headers(init?.headers ?? {})
+    headers.set('Authorization', `Bearer ${_authToken}`)
+    finalInit = { ...(init ?? {}), headers }
+  }
   let response: Response
   try {
-    response = await fetch(path, init)
+    response = await fetch(path, finalInit)
   } catch (err) {
     throw new ApiError(0, err instanceof Error ? err.message : 'network error')
   }
@@ -394,6 +451,16 @@ export const api = {
 
   createOperator: (body: OperatorCreate): Promise<Operator> =>
     postJson<Operator>('/api/operators', body),
+
+  // Phase 23 auth — login mints a bearer token, logout invalidates the
+  // current session, me returns the operator bound to the current
+  // bearer token (used to rehydrate state on page load).
+  login: (body: LoginRequest): Promise<LoginResponse> =>
+    postJson<LoginResponse>('/api/auth/login', body),
+
+  logout: (): Promise<void> => post<void>('/api/auth/logout'),
+
+  me: (): Promise<Operator> => request<Operator>('/api/auth/me'),
 
   // Phase 16A read-only validation preview for a persisted remediation plan.
   getValidationPreview: (recommendationId: string): Promise<ValidationPreview> =>

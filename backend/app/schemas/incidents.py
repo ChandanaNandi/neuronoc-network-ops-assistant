@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.models import (
     ApprovalStatus,
@@ -117,36 +117,15 @@ class RecommendationRead(BaseModel):
 
 
 class ApprovalRequest(BaseModel):
-    """Phase 13A approval payload.
+    """Phase 23 approval payload — body carries `note` only.
 
-    Accepts either:
-      - `operator_id` -> resolves an existing Operator row; `approved_by` is
-        set to that operator's `display_name` and `approved_by_operator_id`
-        is recorded for audit-trail integrity.
-      - `operator_name` (legacy, Phase 10A) -> persisted verbatim into
-        `approved_by`; no FK is set. Kept for backward compatibility so
-        existing CLI / script callers don't break.
+    The approving operator's identity comes from the authenticated
+    bearer-token session (`get_current_operator`), NOT from a
+    submitted field. Any stale caller sending `operator_id` or
+    `operator_name` will fail validation here because `extra="forbid"`
+    is now in effect — that's a deliberate transition signal.
+    """
 
-    Exactly ONE must be provided. `note` is optional in both cases."""
+    model_config = ConfigDict(extra="forbid")
 
-    operator_id: UUID | None = None
-    operator_name: str | None = Field(
-        default=None, min_length=1, max_length=128
-    )
     note: str | None = None
-
-    @model_validator(mode="after")
-    def _require_one_identity_field(self) -> "ApprovalRequest":
-        has_id = self.operator_id is not None
-        has_name = self.operator_name is not None
-        if not has_id and not has_name:
-            raise ValueError(
-                "approval payload must include exactly one of "
-                "operator_id or operator_name"
-            )
-        if has_id and has_name:
-            raise ValueError(
-                "approval payload must include exactly one of "
-                "operator_id or operator_name (both supplied)"
-            )
-        return self

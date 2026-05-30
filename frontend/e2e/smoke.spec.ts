@@ -25,6 +25,26 @@ async function selectBgpIncident(page: Page) {
   ).toBeVisible()
 }
 
+// Phase 23 e2e helper: log in via the LoginPanel form (we deliberately
+// drive the actual UI rather than poking localStorage, so the test
+// exercises the real fetch path including the bearer-token header
+// injection). Assumes `page.goto('/')` has already been called so the
+// LoginPanel is mounted.
+async function loginAs(
+  page: Page,
+  displayName: string,
+  password: string,
+) {
+  await page.getByLabel('login display name').fill(displayName)
+  await page.getByLabel('login password').fill(password)
+  await page.getByRole('button', { name: /^Login$/ }).click()
+  // The panel switches to the "Logged in as" header on success.
+  await expect(page.locator('.login-panel__name')).toHaveText(
+    displayName,
+    { timeout: 5_000 },
+  )
+}
+
 test('app loads and all five status cards render', async ({ page }) => {
   await page.goto('/')
   await expect(page.locator('.app__brand')).toHaveText('NeuroNOC')
@@ -252,42 +272,76 @@ test('Generate remediation plan adds a new plan card', async ({ page }) => {
   })
 })
 
-test('Create an operator via the management panel, then approve a plan with it', async ({
+test('Operators panel still creates operators (Phase 13B UX, post-Phase-23)', async ({
   page,
 }) => {
-  // Unique-per-run name so re-running the suite doesn't 409 on the create
-  // call. These operator rows accumulate in the dev DB and are documented
-  // as such; no delete endpoint exists and removing them isn't worth the
-  // psql plumbing in teardown.
+  // Phase 13B + 13A behaviors still hold: the panel creates operator
+  // rows, surfaces them as chips, and rejects duplicates inline. After
+  // Phase 23 approval is decoupled from operator creation — approving
+  // requires an authenticated admin session, not a freshly-created
+  // operator in the panel. So this test now just verifies the panel,
+  // and a separate test covers the auth-gated approval flow.
   const uniqueName = `e2e-ui-op-${Date.now()}`
 
   await page.goto('/')
 
-  // Open the OperatorsPanel inline form.
   await page.getByRole('button', { name: '+ Add operator' }).click()
   await page.getByLabel('new operator name').fill(uniqueName)
   await page.getByLabel('new operator role').selectOption('operator')
   await page.getByRole('button', { name: 'Create operator' }).click()
 
-  // The new operator chip must appear in the panel without a page reload.
   const chip = page.locator('.operator-chip', { hasText: uniqueName })
   await expect(chip).toBeVisible({ timeout: 5_000 })
-  // Phase 13B contract: chip carries role + a created_at signal.
   await expect(chip).toContainText('[operator]')
   await expect(chip.locator('.operator-chip__when')).toBeVisible()
 
-  // Submitting the same display_name again must surface the 409 inline via
-  // the role=alert element.
+  // Duplicate display_name → inline 409 via role=alert.
   await page.getByRole('button', { name: '+ Add operator' }).click()
   await page.getByLabel('new operator name').fill(uniqueName)
   await page.getByRole('button', { name: 'Create operator' }).click()
   const dupErr = page.getByRole('alert')
   await expect(dupErr).toBeVisible({ timeout: 5_000 })
   await expect(dupErr).toContainText(/already exists/i)
-  // Close the dup form so it doesn't bleed into the approval flow below.
-  await page.getByRole('button', { name: 'Cancel' }).click()
+})
 
-  // Now drive the approval flow using THIS just-created operator.
+
+test('Approval requires login: unauthenticated Approve button stays disabled with explanatory copy', async ({
+  page,
+}) => {
+  // Phase 23 contract: opening the approval form without being logged
+  // in surfaces an inline "Not logged in" alert and disables the
+  // Confirm button. No API request is fired.
+  await selectBgpIncident(page)
+
+  const planCountBefore = await page.locator('.plan-card').count()
+  await page.getByRole('button', { name: 'Generate remediation plan' }).click()
+  await expect(page.locator('.plan-card')).toHaveCount(planCountBefore + 1, {
+    timeout: 20_000,
+  })
+
+  const newest = page.locator('.plan-card').first()
+  await newest.locator('summary').click()
+  await newest.getByRole('button', { name: 'Approve' }).click()
+
+  const form = newest.locator('.approval-form')
+  await expect(form).toBeVisible()
+  await expect(form).toContainText(/not logged in/i)
+  await expect(
+    form.getByRole('button', { name: /^Confirm approve$/i }),
+  ).toBeDisabled()
+})
+
+
+test('Approve a plan via the inline form (Phase 23): login as admin, approve, badge + operator + note land', async ({
+  page,
+}) => {
+  // Phase 23 e2e: log in as the seeded `local-operator` (role=admin),
+  // then approve. The form no longer has an operator dropdown — the
+  // approving identity is the authenticated bearer-token session.
+  await page.goto('/')
+  await loginAs(page, 'local-operator', 'demo-password')
+
+  // Drive the rest of the flow.
   await page
     .locator('button.incident-row', { hasText: BGP_TITLE_PATTERN })
     .click()
@@ -296,76 +350,28 @@ test('Create an operator via the management panel, then approve a plan with it',
   ).toBeVisible()
 
   const planCountBefore = await page.locator('.plan-card').count()
-  await page
-    .getByRole('button', { name: 'Generate remediation plan' })
-    .click()
-  await expect(page.locator('.plan-card')).toHaveCount(planCountBefore + 1, {
-    timeout: 20_000,
-  })
-
-  const newest = page.locator('.plan-card').first()
-  await newest.locator('summary').click()
-  await newest.getByRole('button', { name: 'Approve' }).click()
-
-  const form = newest.locator('.approval-form')
-  await expect(form).toBeVisible()
-  await form
-    .getByLabel('operator', { exact: true })
-    .selectOption({ label: `${uniqueName} (operator)` })
-  await form.getByLabel('approval note').fill('approved with UI-created op')
-  await form
-    .getByRole('button', { name: /^Confirm approve$/i })
-    .click()
-
-  await expect(newest.locator('.badge--approval-approved')).toBeVisible({
-    timeout: 10_000,
-  })
-  await expect(newest.locator('.plan-card__approval')).toContainText(
-    uniqueName,
-  )
-  await expect(newest.locator('.plan-card__approval')).toContainText(
-    'approved with UI-created op',
-  )
-})
-
-
-test('Approve a plan via the inline form shows approved badge + operator + note', async ({
-  page,
-}) => {
-  await selectBgpIncident(page)
-
-  // Make sure there is at least one plan with status `pending` to approve.
-  // Generate a fresh one so we don't depend on prior-test state.
-  const planCountBefore = await page.locator('.plan-card').count()
   await page.getByRole('button', { name: 'Generate remediation plan' }).click()
   await expect(page.locator('.plan-card')).toHaveCount(planCountBefore + 1, {
     timeout: 20_000,
   })
 
-  // Phase 13A: inline form has an operator dropdown populated from
-  // /api/operators. global-setup.ts seeds `local-operator` for this test.
   const newest = page.locator('.plan-card').first()
   await newest.locator('summary').click()
   await newest.getByRole('button', { name: 'Approve' }).click()
 
-  // Form is now visible inside the plan card.
+  // Form is visible; "Approving as" header reflects the logged-in operator.
   const form = newest.locator('.approval-form')
   await expect(form).toBeVisible()
+  await expect(form).toContainText('Approving as')
+  await expect(form).toContainText('local-operator')
+  await expect(form).toContainText('[admin]')
 
-  // Submit should be disabled until an operator is picked or a name typed.
   const confirmBtn = form.getByRole('button', { name: /^Confirm approve$/i })
-  await expect(confirmBtn).toBeDisabled()
-
-  // Select `local-operator` from the dropdown (seeded by global-setup with
-  // role=admin, so the rendered option text is "local-operator (admin)").
-  // `exact: true` is required because the other input is aria-labelled
-  // "operator name" - a partial match would resolve to both.
-  await form
-    .getByLabel('operator', { exact: true })
-    .selectOption({ label: 'local-operator (admin)' })
-  await form.getByLabel('approval note').fill('approved during smoke run')
-
+  // No dropdown / no required name — the button is enabled the moment the
+  // form opens (note is optional).
   await expect(confirmBtn).toBeEnabled()
+
+  await form.getByLabel('approval note').fill('approved during smoke run')
   await confirmBtn.click()
 
   // The refreshed plan card carries the approval state (Phase 10A's cleanup
@@ -374,7 +380,7 @@ test('Approve a plan via the inline form shows approved badge + operator + note'
   await expect(newest.locator('.badge--approval-approved')).toBeVisible({
     timeout: 10_000,
   })
-  // Phase 13A: approved_by is resolved from the Operator's display_name.
+  // approved_by resolved from the authenticated operator (not body input).
   await expect(newest.locator('.plan-card__approval')).toContainText(
     'local-operator',
   )
