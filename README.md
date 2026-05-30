@@ -1,5 +1,7 @@
 # NeuroNOC
 
+[![CI](https://github.com/ChandanaNandi/neuronoc-network-ops-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/ChandanaNandi/neuronoc-network-ops-assistant/actions/workflows/ci.yml)
+
 NeuroNOC is an open-source operator console for AI-assisted network operations: it collects read-only signals from a real lab (or synthetic simulator), detects anomalies with deterministic rules, runs a multi-step LangGraph workflow to assemble an incident analysis, generates an optional local-LLM root-cause explanation, drafts a structured remediation plan, and gates approval behind authenticated admin role-based access. **No remediation is ever executed.**
 
 Built as a portfolio-scale demonstration of AI-NetOps thinking: human-in-the-loop by construction, deterministic where determinism matters, LLM where it earns its keep, and explicit about the line between "this is real lab data" and "this is fabricated for demo purposes."
