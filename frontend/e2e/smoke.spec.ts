@@ -4,6 +4,8 @@
 // would. RCA is tested in a fallback-safe way so the suite doesn't require
 // a running Ollama daemon.
 
+import { readFile } from 'node:fs/promises'
+
 import { expect, test, type Page } from '@playwright/test'
 
 test.describe.configure({ mode: 'serial' })
@@ -763,6 +765,95 @@ test('Reset to sample after editing returns to the active fixture, not BGP', asy
   // And critically NOT BGP - that would be the bug if Reset always went
   // back to the default fixture instead of the active one.
   await expect(textarea).not.toHaveValue(/bgp_neighbor_down/)
+})
+
+test('Telemetry preview: Download JSON exports the default fixture as telemetry-bgp.json', async ({
+  page,
+}) => {
+  // Phase 20A: client-only export via Blob + <a download>. Playwright's
+  // waitForEvent('download') captures the browser-initiated download; we
+  // then read the temp file path to verify the body matches the textarea.
+  await page.goto('/')
+  const panel = page.locator('.telemetry-panel')
+  await panel.locator('summary').first().click()
+
+  const downloadPromise = page.waitForEvent('download')
+  await panel.getByRole('button', { name: /^Download JSON$/ }).click()
+  const download = await downloadPromise
+
+  // Filename is deterministic and ends with .json.
+  expect(download.suggestedFilename()).toBe('telemetry-bgp.json')
+  expect(download.suggestedFilename()).toMatch(/\.json$/)
+
+  const downloadPath = await download.path()
+  expect(downloadPath).not.toBeNull()
+  const content = await readFile(downloadPath!, 'utf-8')
+
+  // The default fixture is BGP-shaped.
+  expect(content).toContain('"event_type": "bgp_neighbor_down"')
+  // And it round-trips as valid JSON.
+  expect(() => JSON.parse(content)).not.toThrow()
+})
+
+test('Telemetry preview: Download JSON respects the active fixture and makes zero telemetry API calls', async ({
+  page,
+}) => {
+  // Phase 20A no-network contract: clicking Download JSON must NOT fire
+  // a request to either telemetry endpoint. Intercept both and count.
+  let validateCallCount = 0
+  let correlateCallCount = 0
+  await page.route('**/api/telemetry/validate', async (route) => {
+    validateCallCount += 1
+    await route.continue()
+  })
+  await page.route('**/api/telemetry/correlate/preview', async (route) => {
+    correlateCallCount += 1
+    await route.continue()
+  })
+
+  await page.goto('/')
+  const panel = page.locator('.telemetry-panel')
+  await panel.locator('summary').first().click()
+
+  // Switch to the unknown vendor fixture so we can pin BOTH the filename
+  // suffix AND the body content to that fixture.
+  await panel.getByLabel('telemetry sample fixture').selectOption('unknown')
+
+  const downloadPromise = page.waitForEvent('download')
+  await panel.getByRole('button', { name: /^Download JSON$/ }).click()
+  const download = await downloadPromise
+
+  expect(download.suggestedFilename()).toBe('telemetry-unknown.json')
+  const content = await readFile((await download.path())!, 'utf-8')
+  expect(content).toContain('"event_type": "vendor_proprietary_trap"')
+
+  // Settle for any late-firing request, then assert NEITHER endpoint was
+  // contacted. Clicking Download must be a purely client-side action.
+  await page.waitForTimeout(250)
+  expect(validateCallCount).toBe(0)
+  expect(correlateCallCount).toBe(0)
+})
+
+test('Telemetry preview: Download JSON exports raw textarea contents even when JSON is invalid', async ({
+  page,
+}) => {
+  // Phase 20A: download is export, not validation. The button must work
+  // regardless of whether the textarea parses as JSON - operators may want
+  // to save a draft to fix offline.
+  await page.goto('/')
+  const panel = page.locator('.telemetry-panel')
+  await panel.locator('summary').first().click()
+
+  const textarea = panel.getByLabel('telemetry event json')
+  const badPayload = '{ this is not valid json }'
+  await textarea.fill(badPayload)
+
+  const downloadPromise = page.waitForEvent('download')
+  await panel.getByRole('button', { name: /^Download JSON$/ }).click()
+  const download = await downloadPromise
+
+  const content = await readFile((await download.path())!, 'utf-8')
+  expect(content).toBe(badPayload)
 })
 
 test('Telemetry preview: unknown vendor fixture falls back to telemetry_observation', async ({

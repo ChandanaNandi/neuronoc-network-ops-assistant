@@ -228,6 +228,28 @@ export function TelemetryPanel() {
     clearResultsAndErrors()
   }
 
+  function downloadJson() {
+    // Phase 20A: client-only export. No backend call, no upload path,
+    // no persistence. Uses browser primitives only: Blob + object URL +
+    // temporary <a download>. Even invalid JSON downloads as raw text -
+    // this is export, not validation.
+    const filename = `telemetry-${activeFixtureId}.json`
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    // Some browsers ignore clicks on nodes that aren't in the document, so
+    // attach briefly. Detach immediately after click - the URL has been
+    // captured by the download flow at that point.
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    // Defer revoke by one tick so the download has fully initiated before
+    // the object URL is invalidated. Standard pattern; safe across browsers.
+    setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+
   const busy = validateLoading || correlateLoading
 
   return (
@@ -321,6 +343,14 @@ export function TelemetryPanel() {
               disabled={busy}
             >
               Reset to sample
+            </button>
+            <button
+              type="button"
+              className="btn btn--action btn--small"
+              onClick={downloadJson}
+              title="Download the current textarea as a local .json file (client-only export; no backend call)"
+            >
+              Download JSON
             </button>
           </div>
 

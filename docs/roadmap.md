@@ -302,7 +302,7 @@ Conventions:
 - All 16 prior tests preserved including the Phase 18D route-interception + invalid-JSON zero-call assertions and the Phase 19A fixture-switch + unknown-fallback tests.
 - Same guardrails — no backend change (zero `.py` files touched), no schema, no migration, no dependency added, no new test framework, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
 
-## Phase 19C — Telemetry fixture accessibility and keyboard coverage *(current)*
+## Phase 19C — Telemetry fixture accessibility and keyboard coverage ✓
 
 - **UI accessibility / test polish only — NOT a new telemetry capability.** Adds focused Playwright coverage of the Phase 19A/19B fixture picker + preview flow. No markup fix was needed — the existing `TelemetryPanel` already exposed every affordance through programmatic labels.
 - Markup audit (no changes required):
@@ -317,6 +317,20 @@ Conventions:
   - `Telemetry panel: keyboard-only flow opens, picks unknown fixture, submits, gets fallback` — focuses `<summary>`, presses Enter to expand, Tabs to the fixture `<select>` (verified by `*:focus` having `id="telemetry-fixture"`), changes to `unknown` via the standard select API (the same OS path screen-reader AT bridges drive), Tabs three more times to land on `Preview correlation` (verified by `*:focus` having text `"Preview correlation"`), presses Enter to submit, and pins the fallback contract (`telemetry_observation`, `would_create_incident: false`, `would_create_event: true`, `persisted: false`).
 - All 18 prior tests preserved, including the Phase 19B stale-result + reset-to-active-fixture assertions.
 - Same guardrails — no backend change (zero `.py` files touched), no schema, no migration, no dependency added (axe-core / @axe-core/playwright deliberately NOT added; no new test framework), no markup change, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
+
+## Phase 20A — Telemetry preview fixture export *(current)*
+
+- **Client-only export — NOT ingestion, replay, upload, or persistence.** Adds a small `Download JSON` button to `TelemetryPanel` that saves the current textarea contents as a local `.json` file. The button never calls the backend, never writes to `localStorage` / `sessionStorage` / cookies, and there is **no matching import / upload path** — operators can pull JSON out, not push it back in.
+- New `downloadJson()` helper uses browser primitives only: `new Blob([json], { type: 'application/json' })` → `URL.createObjectURL` → temporary `<a download>` attached to `document.body` → `click()` → detach → `setTimeout(() => URL.revokeObjectURL(url), 0)` to defer revoke by one tick so the download has fully initiated. Standard pattern; safe across browsers.
+- Filename is deterministic and tied to the active fixture id: `telemetry-bgp.json`, `telemetry-interface.json`, `telemetry-latency.json`, `telemetry-route-missing.json`, `telemetry-unknown.json`. Driven by the existing `activeFixtureId` state — no separate state.
+- Button is always enabled (download is instant and never conflicts with in-flight Validate / Preview correlation calls). Sits at the end of the existing actions row as `btn--small`, alongside `Reset to sample`. Carries a `title=` tooltip clarifying "client-only export; no backend call".
+- **Invalid JSON downloads as raw text.** This is export, not validation — operators may want to save a draft and fix it offline. Pinned by a dedicated test.
+- Three new Playwright tests added (23 total now):
+  - `Telemetry preview: Download JSON exports the default fixture as telemetry-bgp.json` — asserts `suggestedFilename()` equals `telemetry-bgp.json` and the temp-file body contains `"event_type": "bgp_neighbor_down"` and parses as valid JSON.
+  - `Telemetry preview: Download JSON respects the active fixture and makes zero telemetry API calls` — intercepts both `/api/telemetry/validate` and `/api/telemetry/correlate/preview`, switches to the `unknown` fixture, downloads, settles 250 ms, asserts both call counts are **0** and the downloaded body contains `"event_type": "vendor_proprietary_trap"`.
+  - `Telemetry preview: Download JSON exports raw textarea contents even when JSON is invalid` — fills the textarea with `{ this is not valid json }`, downloads, asserts the file body is exactly that string.
+- All 20 prior tests preserved including Phase 19C keyboard + accessible-names assertions, Phase 19B stale-result + reset-to-active-fixture, and Phase 18D route-interception + invalid-JSON zero-call.
+- Same guardrails — no backend change (zero `.py` files touched), no schema, no migration, no dependency added, no API surface change, no upload/import path, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
 
 ## Beyond
 
