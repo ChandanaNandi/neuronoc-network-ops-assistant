@@ -902,6 +902,36 @@
   color: #8b95a3;
 }
 
+/* Phase 19A fixture picker row */
+.telemetry-panel__fixture-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.telemetry-panel__fixture-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #8b95a3;
+}
+
+.telemetry-panel__fixture-select {
+  background: #050810;
+  color: #c8d1dc;
+  border: 1px solid #2a313c;
+  border-radius: 4px;
+  padding: 0.18rem 0.4rem;
+  font-size: 0.78rem;
+  font-family: inherit;
+}
+
+.telemetry-panel__fixture-hint {
+  font-size: 0.7rem;
+  font-style: italic;
+}
+
 .telemetry-panel__textarea {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.78rem;

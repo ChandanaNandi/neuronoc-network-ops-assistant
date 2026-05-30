@@ -260,7 +260,7 @@ Conventions:
 - Existing components (OperatorsPanel, RunbooksPanel, IncidentList, IncidentDetail, agent inspector, validation preview, runbook search) are untouched.
 - Same guardrails — no backend change, no schema, no migration, no dependency, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
 
-## Phase 18D — Telemetry preview API smoke coverage *(current)*
+## Phase 18D — Telemetry preview API smoke coverage ✓
 
 - **Client-contract coverage only — NOT a new telemetry capability.** Frontend has no Vitest / Jest harness (only Playwright); per spec, extended Playwright with `page.route()` interception rather than adding a new test framework / dependency.
 - Strengthened the existing Phase 18C `Telemetry preview correlates the sample BGP event` test with route interception that counts requests to `/api/telemetry/correlate/preview`. The valid-sample click is now pinned to fire **exactly 1** request; the invalid-JSON click is pinned to fire **0** additional requests (count stays at 1 after a 250 ms settle). Existing inline `"not sent to backend"` parse-error assertion preserved.
@@ -269,6 +269,23 @@ Conventions:
   - `Telemetry preview API: Preview correlation POSTs the body and the response carries persisted=false` — intercepts both directions via `route.fetch()`, asserts the outbound body matches the sample AND the inbound response carries `persisted: false`, `suggested_incident_type: bgp_neighbor_down`, `would_create_incident: true`, `would_create_event: true`.
 - Panel placement and default-collapsed behavior unchanged. No new client code paths added — the panel itself, the API wrappers, and the backend endpoints are all untouched.
 - Same guardrails — no backend change (zero `.py` files touched), no schema, no migration, no dependency added, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
+
+## Phase 19A — Telemetry preview fixtures for reusable scenarios *(current)*
+
+- **Client-side examples only — NOT ingestion, replay, or persistence.** Adds a compact `Sample fixture` dropdown above the textarea in the existing `TelemetryPanel`. Selecting an entry replaces the textarea JSON; nothing else in the UI flow changes.
+- Five hard-coded fixtures, defined as a `FIXTURES` constant array at module scope in `src/components/TelemetryPanel.tsx`:
+  - `bgp` — BGP neighbor down (default)
+  - `interface` — Interface down / errors
+  - `latency` — Latency spike
+  - `route-missing` — Route missing / withdrawn
+  - `unknown` — Unknown vendor trap (fallback) — shaped with **zero rule keywords** in `event_type` / `message` so the Phase 18B correlator falls through to `telemetry_observation` deterministically. Pins `would_create_incident: false`, `would_create_event: true`, `persisted: false`.
+- New `activeFixtureId` React state + `loadFixture(id)` helper. `Reset to sample` snaps back to the **currently-active** fixture (not always BGP), so picking unknown → editing → reset returns the unknown JSON. **Never reads from or writes to** `localStorage` / `sessionStorage` / cookies / URL params / backend.
+- Panel placement (between Runbooks panel and master/detail) and default-collapsed `<details>` behavior preserved verbatim. Existing buttons (`Validate`, `Preview correlation`, `Reset to sample`) keep their semantics; local parse-error short-circuit before API call still in place; API errors still rendered distinct from parse errors.
+- Two new Playwright tests added (16 total now):
+  - `Telemetry fixture picker swaps the textarea contents to the selected event` — selects each fixture in turn and asserts the textarea reflects the expected `event_type` string. Catches any wiring regression (wrong id, lost entry, label/value drift).
+  - `Telemetry preview: unknown vendor fixture falls back to telemetry_observation` — picks `unknown`, clicks `Preview correlation`, and asserts the rendered dl's `<dd>` for `would_create_incident` is `false`, `would_create_event` is `true`, and `persisted` is `false`.
+- All 14 prior Phase 18C/18D tests preserved, including the route-interception assertions and the invalid-JSON zero-call assertion.
+- Same guardrails — no backend change, no schema, no migration, no dependency added, no new test framework, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
 
 ## Beyond
 

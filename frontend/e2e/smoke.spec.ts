@@ -566,6 +566,77 @@ test('Telemetry preview API: Validate POSTs the JSON body to /api/telemetry/vali
   expect(parsed.severity).toBe('critical')
 })
 
+test('Telemetry fixture picker swaps the textarea contents to the selected event', async ({
+  page,
+}) => {
+  await page.goto('/')
+  const panel = page.locator('.telemetry-panel')
+  await panel.locator('summary').first().click()
+
+  const textarea = panel.getByLabel('telemetry event json')
+  const picker = panel.getByLabel('telemetry sample fixture')
+
+  // Default fixture is BGP - textarea opens with bgp_neighbor_down content.
+  await expect(textarea).toHaveValue(/"event_type":\s*"bgp_neighbor_down"/)
+
+  // Each fixture's value -> expected event_type string in the textarea.
+  // Pinning all 5 catches any wiring regression (wrong fixture id, lost
+  // entry, drift between value and label).
+  const cases: { value: string; expected: RegExp }[] = [
+    { value: 'interface', expected: /"event_type":\s*"interface_down"/ },
+    { value: 'latency', expected: /"event_type":\s*"latency_spike"/ },
+    { value: 'route-missing', expected: /"event_type":\s*"route_withdrawn"/ },
+    {
+      value: 'unknown',
+      expected: /"event_type":\s*"vendor_proprietary_trap"/,
+    },
+    { value: 'bgp', expected: /"event_type":\s*"bgp_neighbor_down"/ },
+  ]
+  for (const { value, expected } of cases) {
+    await picker.selectOption(value)
+    await expect(textarea).toHaveValue(expected)
+  }
+})
+
+test('Telemetry preview: unknown vendor fixture falls back to telemetry_observation', async ({
+  page,
+}) => {
+  // Phase 19A contract: the unknown vendor fixture has no rule keywords
+  // in event_type or message, so the Phase 18B correlator must fall
+  // through to telemetry_observation. Pinning all four flags here so a
+  // future rule rewrite that accidentally swept unknown traps into a
+  // specific incident_type would fail this test.
+  await page.goto('/')
+  const panel = page.locator('.telemetry-panel')
+  await panel.locator('summary').first().click()
+
+  await panel.getByLabel('telemetry sample fixture').selectOption('unknown')
+  await panel.getByRole('button', { name: /^Preview correlation$/i }).click()
+
+  const result = panel.locator('.telemetry-panel__result')
+  await expect(result).toBeVisible({ timeout: 5_000 })
+  await expect(result).toContainText('telemetry_observation')
+
+  // The dl pairs key/value text. Anchor each assertion to the specific
+  // <dt> so we don't accidentally match a substring elsewhere on the page.
+  const dl = result.locator('.telemetry-panel__dl')
+  await expect(
+    dl.locator('dt', { hasText: 'would_create_incident' }),
+  ).toBeVisible()
+  await expect(
+    dl.locator('dt', { hasText: 'would_create_incident' })
+      .locator('xpath=following-sibling::dd[1]'),
+  ).toHaveText('false')
+  await expect(
+    dl.locator('dt', { hasText: 'would_create_event' })
+      .locator('xpath=following-sibling::dd[1]'),
+  ).toHaveText('true')
+  await expect(
+    dl.locator('dt', { hasText: 'persisted' })
+      .locator('xpath=following-sibling::dd[1]'),
+  ).toHaveText('false')
+})
+
 test('Telemetry preview API: Preview correlation POSTs the body and the response carries persisted=false', async ({
   page,
 }) => {

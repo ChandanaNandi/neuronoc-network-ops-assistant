@@ -6,26 +6,127 @@ import {
   type TelemetryEvent,
 } from '../api'
 
-// Hard-coded session-only sample. Never written to localStorage / cookies.
-// BGP-shaped so clicking "Preview correlation" out of the box exercises the
-// most informative rule branch.
-const SAMPLE_EVENT_JSON = JSON.stringify(
+// Phase 19A fixture set. Hard-coded, in-memory only - never read from or
+// written to localStorage / sessionStorage / cookies / URL params. The
+// dropdown above the textarea picks one; selecting replaces the textarea
+// contents with the fixture's formatted JSON. Operator edits are local
+// React state and vanish on reload by design.
+//
+// Each fixture is shaped to exercise a specific Phase 18B correlator
+// branch (BGP / interface / latency / route / fallback). The "unknown
+// vendor trap" deliberately uses no rule keywords in event_type / message
+// so it falls through to telemetry_observation - that's the contract the
+// fallback test pins.
+interface TelemetryFixture {
+  id: string
+  label: string
+  event: Record<string, unknown>
+}
+
+const FIXTURES: TelemetryFixture[] = [
   {
-    source: 'snmp:edge-1',
-    collector_type: 'snmp',
-    hostname: 'edge-1',
-    mgmt_ip: '10.0.0.11',
-    device_hint: 'edge-1.lab',
-    observed_at: '2026-05-30T12:00:00Z',
-    event_type: 'bgp_neighbor_down',
-    severity: 'critical',
-    message: 'BGP neighbor 10.0.0.21 transitioned to Idle',
-    labels: { neighbor: '10.0.0.21', vrf: 'default' },
-    raw: { trap_oid: '1.3.6.1.4.1.9.9.187.0.1', peer_state: 'idle' },
+    id: 'bgp',
+    label: 'BGP neighbor down',
+    event: {
+      source: 'snmp:edge-1',
+      collector_type: 'snmp',
+      hostname: 'edge-1',
+      mgmt_ip: '10.0.0.11',
+      device_hint: 'edge-1.lab',
+      observed_at: '2026-05-30T12:00:00Z',
+      event_type: 'bgp_neighbor_down',
+      severity: 'critical',
+      message: 'BGP neighbor 10.0.0.21 transitioned to Idle',
+      labels: { neighbor: '10.0.0.21', vrf: 'default' },
+      raw: { trap_oid: '1.3.6.1.4.1.9.9.187.0.1', peer_state: 'idle' },
+    },
   },
-  null,
-  2,
-)
+  {
+    id: 'interface',
+    label: 'Interface down / errors',
+    event: {
+      source: 'snmp:core-1',
+      collector_type: 'snmp',
+      hostname: 'core-1',
+      mgmt_ip: '10.0.0.1',
+      device_hint: 'core-1.lab',
+      observed_at: '2026-05-30T12:00:00Z',
+      event_type: 'interface_down',
+      severity: 'error',
+      message: 'GigabitEthernet0/1 transitioned to down',
+      labels: { interface: 'Gi0/1', site: 'dc-a' },
+      raw: {
+        ifname: 'GigabitEthernet0/1',
+        oid: '1.3.6.1.2.1.2.2.1.8.1',
+        value: '2',
+      },
+    },
+  },
+  {
+    id: 'latency',
+    label: 'Latency spike',
+    event: {
+      source: 'syslog:edge-2',
+      collector_type: 'syslog',
+      hostname: 'edge-2',
+      mgmt_ip: '10.0.0.12',
+      device_hint: 'edge-2.lab',
+      observed_at: '2026-05-30T12:00:00Z',
+      event_type: 'latency_spike',
+      severity: 'warning',
+      message: 'RTT to 10.0.0.21 above 500 ms over last 60 s',
+      labels: { peer_ip: '10.0.0.21', path: 'edge-2->edge-1' },
+      raw: { metric: 'rtt_ms', value: 612.4 },
+    },
+  },
+  {
+    id: 'route-missing',
+    label: 'Route missing / withdrawn',
+    event: {
+      source: 'syslog:core-1',
+      collector_type: 'syslog',
+      hostname: 'core-1',
+      mgmt_ip: '10.0.0.1',
+      device_hint: 'core-1.lab',
+      observed_at: '2026-05-30T12:00:00Z',
+      event_type: 'route_withdrawn',
+      severity: 'error',
+      message: 'prefix 10.0.0.0/24 withdrawn from RIB',
+      labels: { prefix: '10.0.0.0/24', protocol: 'bgp' },
+      raw: { rib: 'inet.0', via: '10.0.0.21' },
+    },
+  },
+  {
+    id: 'unknown',
+    label: 'Unknown vendor trap (fallback)',
+    event: {
+      source: 'snmp:custom-vendor-7',
+      collector_type: 'snmp',
+      hostname: 'custom-vendor-7',
+      mgmt_ip: '10.0.0.99',
+      device_hint: 'custom-vendor-7.lab',
+      observed_at: '2026-05-30T12:00:00Z',
+      event_type: 'vendor_proprietary_trap',
+      severity: 'info',
+      // No BGP / interface / latency / route / ACL keyword on purpose -
+      // this must fall through to telemetry_observation.
+      message:
+        'device emitted a vendor-specific diagnostic (no NeuroNOC rule mapped)',
+      labels: { vendor: 'acme-net', trap_kind: 'diag-notify' },
+      raw: { trap_oid: '1.3.6.1.4.1.99999.1.2.3', value: 'informational' },
+    },
+  },
+]
+
+const DEFAULT_FIXTURE_ID = 'bgp'
+
+function fixtureJson(fixture: TelemetryFixture): string {
+  return JSON.stringify(fixture.event, null, 2)
+}
+
+function findFixture(id: string): TelemetryFixture {
+  return FIXTURES.find((f) => f.id === id) ?? FIXTURES[0]
+}
 
 // Phase 18C operator-facing wrapper around the Phase 18A `/validate` and
 // Phase 18B `/correlate/preview` endpoints. Read-only by construction:
@@ -36,7 +137,12 @@ const SAMPLE_EVENT_JSON = JSON.stringify(
 //
 // Default-collapsed via <details> so it doesn't clutter the main workflow.
 export function TelemetryPanel() {
-  const [json, setJson] = useState(SAMPLE_EVENT_JSON)
+  // Phase 19A: active fixture id picks which sample replaces the textarea
+  // on "Reset to sample" and which entry is highlighted in the dropdown.
+  // Pure React state - never written to localStorage / sessionStorage /
+  // cookies / URL params.
+  const [activeFixtureId, setActiveFixtureId] = useState(DEFAULT_FIXTURE_ID)
+  const [json, setJson] = useState(() => fixtureJson(findFixture(DEFAULT_FIXTURE_ID)))
   const [parseError, setParseError] = useState<string | null>(null)
   const [apiError, setApiError] = useState<string | null>(null)
   const [validateLoading, setValidateLoading] = useState(false)
@@ -97,8 +203,18 @@ export function TelemetryPanel() {
     }
   }
 
+  function loadFixture(id: string) {
+    const fixture = findFixture(id)
+    setActiveFixtureId(fixture.id)
+    setJson(fixtureJson(fixture))
+    setParseError(null)
+    setApiError(null)
+  }
+
   function resetToSample() {
-    setJson(SAMPLE_EVENT_JSON)
+    // Snap back to the currently-active fixture so picking "unknown vendor"
+    // then editing then resetting brings back the unknown vendor, not BGP.
+    setJson(fixtureJson(findFixture(activeFixtureId)))
     setParseError(null)
     setApiError(null)
   }
@@ -122,6 +238,32 @@ export function TelemetryPanel() {
             shows how Phase 18B would map it to an incident. Neither call
             persists anything or contacts a device.
           </p>
+
+          <div className="telemetry-panel__fixture-row">
+            <label
+              className="telemetry-panel__fixture-label"
+              htmlFor="telemetry-fixture"
+            >
+              Sample fixture
+            </label>
+            <select
+              id="telemetry-fixture"
+              className="telemetry-panel__fixture-select"
+              aria-label="telemetry sample fixture"
+              value={activeFixtureId}
+              onChange={(e) => loadFixture(e.target.value)}
+              disabled={busy}
+            >
+              {FIXTURES.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.label}
+                </option>
+              ))}
+            </select>
+            <span className="muted telemetry-panel__fixture-hint">
+              session-only · selecting replaces the textarea contents
+            </span>
+          </div>
 
           <label className="telemetry-panel__label" htmlFor="telemetry-json">
             Telemetry event JSON
