@@ -598,6 +598,111 @@ test('Telemetry fixture picker swaps the textarea contents to the selected event
   }
 })
 
+test('Telemetry panel: accessible names and roles are present', async ({
+  page,
+}) => {
+  // Phase 19C smoke check - no axe / no new dependency, just confirm that
+  // the structural ARIA contract the rest of the suite relies on actually
+  // surfaces through Playwright's role/label queries. If any of these
+  // started returning zero, the panel's accessibility would have silently
+  // regressed and the more elaborate keyboard test below would be
+  // misleading.
+  await page.goto('/')
+
+  // The panel is a labelled section, which makes it a "region" landmark.
+  const region = page.getByRole('region', { name: 'telemetry preview' })
+  await expect(region).toBeVisible()
+
+  // Expand so the body comes into the DOM.
+  await region.locator('summary').first().click()
+
+  // Fixture picker + textarea by their accessible names.
+  await expect(region.getByLabel('telemetry sample fixture')).toBeVisible()
+  await expect(region.getByLabel('telemetry event json')).toBeVisible()
+
+  // Buttons by role + name (exact-match regex so a future rename or text
+  // suffix would fail the test instead of silently broadening the match).
+  await expect(
+    region.getByRole('button', { name: /^Validate$/ }),
+  ).toBeVisible()
+  await expect(
+    region.getByRole('button', { name: /^Preview correlation$/ }),
+  ).toBeVisible()
+  await expect(
+    region.getByRole('button', { name: /^Reset to sample$/ }),
+  ).toBeVisible()
+})
+
+test('Telemetry panel: keyboard-only flow opens, picks unknown fixture, submits, gets fallback', async ({
+  page,
+}) => {
+  // Phase 19C contract: the whole preview flow must be operable without
+  // mouse. Open the collapsed <details> with Enter, Tab to the fixture
+  // <select>, change to unknown via the standard <select> API (the same
+  // path a screen-reader user takes through their AT), Tab to the
+  // Preview correlation button, press Enter, and assert the fallback
+  // mapping landed.
+  await page.goto('/')
+  const panel = page.locator('.telemetry-panel')
+  await expect(panel).toBeVisible()
+
+  // Open the collapsed panel via keyboard only (focus summary + Enter).
+  const summary = panel.locator('summary').first()
+  await summary.focus()
+  await page.keyboard.press('Enter')
+
+  // After expansion, body content is in the DOM and focusable.
+  const textarea = panel.getByLabel('telemetry event json')
+  await expect(textarea).toBeVisible()
+
+  // Tab from summary lands on the fixture <select> (next focusable element
+  // in document order). Pin via the focused element's id.
+  await page.keyboard.press('Tab')
+  await expect(page.locator('*:focus')).toHaveAttribute(
+    'id',
+    'telemetry-fixture',
+  )
+
+  // Change the focused select to unknown. selectOption is the canonical
+  // Playwright primitive for <select> and is non-mouse; AT bridges drive
+  // selects through the same OS path.
+  const picker = panel.getByLabel('telemetry sample fixture')
+  await picker.selectOption('unknown')
+  await expect(textarea).toHaveValue(/vendor_proprietary_trap/)
+
+  // Tab from the select to Preview correlation. Document order is:
+  // select -> textarea -> Validate button -> Preview correlation button.
+  await page.keyboard.press('Tab') // -> textarea
+  await page.keyboard.press('Tab') // -> Validate
+  await page.keyboard.press('Tab') // -> Preview correlation
+  await expect(page.locator('*:focus')).toHaveText(/^Preview correlation$/)
+
+  // Activate via keyboard.
+  await page.keyboard.press('Enter')
+
+  // Result block appears with the fallback mapping. Pin all four flags
+  // via the rendered dl so a regression on any one of them fails here.
+  const result = panel.locator('.telemetry-panel__result')
+  await expect(result).toBeVisible({ timeout: 5_000 })
+  await expect(result).toContainText('telemetry_observation')
+  const dl = result.locator('.telemetry-panel__dl')
+  await expect(
+    dl
+      .locator('dt', { hasText: 'would_create_incident' })
+      .locator('xpath=following-sibling::dd[1]'),
+  ).toHaveText('false')
+  await expect(
+    dl
+      .locator('dt', { hasText: 'would_create_event' })
+      .locator('xpath=following-sibling::dd[1]'),
+  ).toHaveText('true')
+  await expect(
+    dl
+      .locator('dt', { hasText: 'persisted' })
+      .locator('xpath=following-sibling::dd[1]'),
+  ).toHaveText('false')
+})
+
 test('Telemetry preview clears stale result block when fixture is switched', async ({
   page,
 }) => {

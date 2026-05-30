@@ -287,7 +287,7 @@ Conventions:
 - All 14 prior Phase 18C/18D tests preserved, including the route-interception assertions and the invalid-JSON zero-call assertion.
 - Same guardrails — no backend change, no schema, no migration, no dependency added, no new test framework, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
 
-## Phase 19B — Telemetry fixture reset and stale-result polish *(current)*
+## Phase 19B — Telemetry fixture reset and stale-result polish ✓
 
 - **UI polish only — NOT new telemetry ingestion or persistence.** Tightens the Phase 19A fixture picker so a displayed result never looks like it belongs to a newly-selected or just-edited payload when it was actually produced by an older one.
 - New `clearResultsAndErrors()` helper in `TelemetryPanel` nulls all four ephemeral states (`validateResult`, `correlateResult`, `parseError`, `apiError`) in one call. Wired into:
@@ -301,6 +301,22 @@ Conventions:
   - `Reset to sample after editing returns to the active fixture, not BGP` — see above.
 - All 16 prior tests preserved including the Phase 18D route-interception + invalid-JSON zero-call assertions and the Phase 19A fixture-switch + unknown-fallback tests.
 - Same guardrails — no backend change (zero `.py` files touched), no schema, no migration, no dependency added, no new test framework, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
+
+## Phase 19C — Telemetry fixture accessibility and keyboard coverage *(current)*
+
+- **UI accessibility / test polish only — NOT a new telemetry capability.** Adds focused Playwright coverage of the Phase 19A/19B fixture picker + preview flow. No markup fix was needed — the existing `TelemetryPanel` already exposed every affordance through programmatic labels.
+- Markup audit (no changes required):
+  - `<section className="telemetry-panel" aria-label="telemetry preview">` — labelled `<section>` is a "region" landmark
+  - `<select id="telemetry-fixture">` is associated with `<label htmlFor="telemetry-fixture">` AND carries `aria-label="telemetry sample fixture"` for test addressability
+  - `<textarea id="telemetry-json">` is dual-labelled the same way (`aria-label="telemetry event json"`)
+  - Buttons (`Validate`, `Preview correlation`, `Reset to sample`) get their accessible names from text content
+  - Error banners use `role="alert"`
+  - Native `<details>` / `<summary>` makes the collapse-toggle keyboard-operable (Enter / Space) without any custom JS
+- Two new Playwright tests added (20 total now):
+  - `Telemetry panel: accessible names and roles are present` — pin-test that the section is reachable as `getByRole('region', { name: 'telemetry preview' })`, the fixture picker via `getByLabel('telemetry sample fixture')`, the textarea via `getByLabel('telemetry event json')`, and all three buttons via `getByRole('button', { name: /^.../ })` with exact-match regex. Smoke check; no axe / no new dependency.
+  - `Telemetry panel: keyboard-only flow opens, picks unknown fixture, submits, gets fallback` — focuses `<summary>`, presses Enter to expand, Tabs to the fixture `<select>` (verified by `*:focus` having `id="telemetry-fixture"`), changes to `unknown` via the standard select API (the same OS path screen-reader AT bridges drive), Tabs three more times to land on `Preview correlation` (verified by `*:focus` having text `"Preview correlation"`), presses Enter to submit, and pins the fallback contract (`telemetry_observation`, `would_create_incident: false`, `would_create_event: true`, `persisted: false`).
+- All 18 prior tests preserved, including the Phase 19B stale-result + reset-to-active-fixture assertions.
+- Same guardrails — no backend change (zero `.py` files touched), no schema, no migration, no dependency added (axe-core / @axe-core/playwright deliberately NOT added; no new test framework), no markup change, no real SNMP/syslog collection, no socket, no device contact, no persistence, no LLM behavior change.
 
 ## Beyond
 
