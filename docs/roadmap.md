@@ -189,7 +189,7 @@ Conventions:
 - **CLI intentionally skipped.** The API returns the exact same Pydantic JSON via a single GET, and the existing `python -m app.remediation.planner --incident-id X --no-persist` already prints the full plan (including all validation fields). Adding a `python -m app.validation.preview` would duplicate the API for zero new capability and would carry ~20 lines of argparse boilerplate + 1–2 CLI tests for the privilege.
 - Same guardrails as every prior phase — no execution path, no device connection, no auth/RBAC, no LLM behavior change, no schema migration, no new dependency. Frontend wiring deferred to a later sub-phase.
 
-## Phase 16B — Validation preview UI *(current)*
+## Phase 16B — Validation preview UI ✓
 
 - Frontend-only: surfaces the Phase 16A `GET /api/validation/recommendations/{id}/preview` response inside each remediation `plan-card` so operators can inspect the validation surface before approving.
 - New TS type `ValidationPreview` (`frontend/src/api.ts`) mirrors `ValidationPreviewRead`; `executable: false` is a literal type so the compiler refuses any reassignment. New `api.getValidationPreview(recommendationId)` fetch wrapper.
@@ -198,6 +198,19 @@ Conventions:
 - Render contract: ONLY `Pre-checks`, `Post-checks`, `Validation criteria`, `Rollback steps`, `Safety notes` plus a header line `source: remediation_plan · executable: false` and the caveat "Read-only. Nothing here executes a command or contacts a device. Proposed commands and Ansible playbook are intentionally omitted." The Playwright assertion pins `executable: false`, `source: remediation_plan`, both `Pre-checks` and `Validation criteria` sections, AND the absence of `proposed_commands` / `proposed_ansible_playbook` strings — so any future refactor that leaks an actionable field will fail the build.
 - Existing Approve/Reject behavior is unaffected; the operator strip, approval form, and Phase 15B inspector are untouched.
 - Same guardrails as every prior phase — no backend change, no schema, no migration, no dependency, no execution path, no device contact, no auth/RBAC, no LLM behavior change.
+
+## Phase 17A — Lightweight runbook retrieval index *(current)*
+
+- **Deterministic keyword retrieval, NOT vector RAG yet.** No embeddings, no pgvector, no Ollama dependency, no network calls — the scorer is the same in-process `retrieve_runbooks` from Phase 6 (`app/knowledge/retriever.py`).
+- Tiny extension to the Phase 6 retriever: `RetrievedRunbook` gains a `path` field (relative filename inside `app/knowledge/runbooks/`, e.g. `bgp.md`). One-line dataclass addition + one construction-site update. RCA reads only `.title` / `.name` / `.score` / `.snippet`, so this is fully backward-compatible.
+- New schema `RunbookHit` (`app/schemas/runbooks.py`, `extra="forbid"`): `{slug, title, score, excerpt, path}`. Excerpt is the bundled first ~280 chars — the endpoint never reads or returns the full runbook file.
+- New endpoint `GET /api/runbooks/search?q=...&incident_id=...&limit=5` → `list[RunbookHit]`. Query sources:
+  - `q` is free-text, tokenised against title (2× weight) and body, alpha tie-break.
+  - `incident_id` (optional) derives a query from the incident row's `title + incident_type + summary`. No agent-run trigger, no LLM side effect, no DB write.
+  - At least one of `q` / `incident_id` must be supplied (400 otherwise). 404 if `incident_id` is unknown. 422 for `limit` outside `[1, 20]`.
+- **RCA integration left untouched on purpose.** The Phase 6 RCA explainer (`app/rca/explainer.py`) already calls `retrieve_runbooks(...)` cleanly with its own `_retrieval_query()` builder; rewriting that to go through the new HTTP layer would add a roundtrip with no quality gain and would couple RCA to its own router. The Phase 17A endpoint is purely an operator-facing surface.
+- Tests: 17 new in `test_runbooks.py` covering loader (every bundled runbook present), the new `path` field, BGP-query → bgp.md ordering, limit, empty/no-match → `[]`, all four API entry points (`q` only, `incident_id` only, both combined, no-match returns `[]`), and the 400/404/422 error surface.
+- Same guardrails as every prior phase — no schema migration, no dependency added, no LLM behavior change, no remediation execution path, no device connection, no auth/RBAC, no frontend code touched.
 
 ## Beyond
 

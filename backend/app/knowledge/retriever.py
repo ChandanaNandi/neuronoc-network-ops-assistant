@@ -21,9 +21,10 @@ _WORD_RE = re.compile(r"[a-zA-Z]{3,}")
 @dataclass(frozen=True)
 class RetrievedRunbook:
     title: str
-    name: str  # filename without extension
+    name: str  # filename without extension (slug)
     snippet: str
     score: float
+    path: str  # filename relative to RUNBOOKS_DIR, e.g. "bgp.md"
 
 
 def _tokenize(text: str) -> list[str]:
@@ -86,6 +87,7 @@ def retrieve_runbooks(
                 name=name,
                 snippet=_make_snippet(content),
                 score=float(score),
+                path=f"{name}.md",
             )
         )
 

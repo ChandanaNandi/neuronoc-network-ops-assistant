@@ -8,6 +8,7 @@ from app.api.lab import router as lab_router
 from app.api.operators import router as operators_router
 from app.api.rca import router as rca_router
 from app.api.remediation import router as remediation_router
+from app.api.runbooks import router as runbooks_router
 from app.api.simulator import router as simulator_router
 from app.api.validation import router as validation_router
 from app.core.config import settings
@@ -23,6 +24,7 @@ app.include_router(remediation_router)
 app.include_router(lab_router)
 app.include_router(operators_router)
 app.include_router(validation_router)
+app.include_router(runbooks_router)
 
 
 @app.get("/")

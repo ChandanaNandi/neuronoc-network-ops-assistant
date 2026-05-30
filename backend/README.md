@@ -56,6 +56,7 @@ Endpoints:
 - `GET /api/operators` — Phase 13A: list operators (minimal dev/local identity rows)
 - `POST /api/operators` — create an operator (409 on duplicate `display_name`)
 - `GET /api/validation/recommendations/{id}/preview` — Phase 16A: read-only validation surface derived from a persisted remediation plan's fenced JSON. Returns `pre_checks` / `post_checks` / `validation_criteria` / `rollback_steps` / `safety_notes` plus `executable=False` and `validation_source="remediation_plan"`. 404 if the recommendation is missing, 400 if `recommendation_type` ≠ `remediation_plan`, 400 if the plan JSON is missing / malformed / fails schema validation. **Plan-only and read-only — no execution, no device contact; `proposed_commands` / `proposed_ansible_playbook` are intentionally NOT included so the response can't be mistaken for an actionable artifact.**
+- `GET /api/runbooks/search?q=…&incident_id=…&limit=5` — Phase 17A: deterministic keyword search over the bundled Markdown runbooks (`app/knowledge/runbooks/*.md`). Reuses the Phase 6 in-process scorer (title 2× weight, body 1×, alpha tie-break). Returns `RunbookHit[]` with `{slug, title, score, excerpt, path}`. At least one of `q` / `incident_id` is required (400 otherwise); 404 if `incident_id` is unknown; 422 for `limit` outside `[1, 20]`. `incident_id` derives the query from the incident row's `title + incident_type + summary` with no agent-run side effect. **No embeddings, no pgvector, no LLM call, no network — purely in-process; never executes a command.**
 
 Interactive docs at `/docs` once running.
 
