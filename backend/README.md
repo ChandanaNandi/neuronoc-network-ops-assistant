@@ -306,18 +306,20 @@ psql "postgresql://neuronoc:neuronoc_dev_password@localhost:5433/neuronoc" \
 
 In the operator console, new lab incidents appear after the next `Refresh` click or after the next 15 s status-grid poll — no UI change is needed for this feature.
 
-## Operators (Phase 13A)
+## Operators + auth + RBAC (Phase 13A + Phase 23)
 
-Minimal local identity rows so the approval workflow can attribute decisions to a known row instead of an arbitrary string. **NOT production auth** — no passwords, tokens, sessions, RBAC enforcement, or external IdP integration. The `role` column (`operator` / `admin`) is advisory and not checked anywhere yet.
+Phase 13A introduced minimal local identity rows in an `operators` table (`display_name` unique + indexed, `role` ∈ {`operator`, `admin`}). Phase 23 upgraded that into local-dev authentication with PBKDF2-SHA256 password hashes, bearer-token sessions, and role-gated approval endpoints. **Local dev auth — honest in docs.** Production should swap in a real IdP (SSO / SAML / OAuth) and move tokens to HttpOnly cookies behind that.
 
-Seed an operator (idempotent by `display_name`):
+Seed an operator (idempotent by `display_name`; `--password` rotates the hash on the existing row when re-run):
 
 ```bash
-uv run python -m app.operators.seed --name local-operator --role admin
-uv run python -m app.operators.seed --name alice --role operator
+uv run python -m app.operators.seed --name local-operator --role admin --password demo-password
+uv run python -m app.operators.seed --name alice           --role operator --password <pw>
 ```
 
-Or via the API:
+Operators created without `--password` have `password_hash=NULL` and cannot log in until a password is set. There is no self-service password-reset endpoint.
+
+Or create an operator row (no password) via the API:
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/api/operators \
@@ -327,12 +329,26 @@ curl -s -X POST http://127.0.0.1:8000/api/operators \
 curl -s http://127.0.0.1:8000/api/operators | jq .
 ```
 
-The approval endpoints (`POST /api/remediation/recommendations/{id}/{approve,reject}`) accept **either**:
+Log in to obtain a bearer token:
 
-- `{"operator_id": "<uuid>", "note": "..."}` — resolves the operator row; `approved_by` is set to `display_name` and `approved_by_operator_id` records the FK for audit trail integrity.
-- `{"operator_name": "alice", "note": "..."}` — legacy Phase 10A shape; persisted verbatim; FK stays NULL.
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"display_name":"local-operator","password":"demo-password"}' | jq .
+# {"token":"<opaque-base64url>","operator":{"id":"…","display_name":"local-operator","role":"admin",…}}
+```
 
-Exactly one of `operator_id` / `operator_name` is required (422 if neither). Existing CLI/script callers that send only `operator_name` continue to work unchanged.
+The token (`secrets.token_urlsafe(32)`, 7-day TTL, no sliding-window renewal) goes into `Authorization: Bearer <token>` on every subsequent request. Login responses use a uniform generic 401 "invalid credentials" message for unknown user / wrong password / no password set — the API never leaks which case fired.
+
+Approval endpoints (`POST /api/remediation/recommendations/{id}/{approve,reject}`) require auth + `role=admin`:
+
+- Body is `{note?}` only (`extra="forbid"`); the legacy `operator_id` / `operator_name` body fields now return 422 so stale callers fail loudly rather than silently bypassing auth.
+- `approved_by` / `approved_by_operator_id` are taken from the authenticated session, NEVER from the request body.
+- 401 without bearer auth; 403 if authenticated as a non-admin role; 404 if recommendation missing; 400 if `recommendation_type ≠ remediation_plan`. **Records intent only — no execution.**
+
+`POST /api/auth/logout` invalidates the current session (401 if called unauthenticated — no silent no-op). `GET /api/auth/me` returns the bound `Operator` row (used by the frontend to rehydrate login state on page load).
+
+All non-approval endpoints remain unauthenticated by design; bearer tokens are accepted everywhere but ignored where auth isn't required.
 
 ## Test
 

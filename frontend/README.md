@@ -1,6 +1,6 @@
 # NeuroNOC frontend
 
-Vite + React + TypeScript operator console for the NeuroNOC backend. The console renders incidents, anomaly findings, events, evidence, agent runs, RCA explanations, and remediation plans; exposes action buttons that hit the backend live; supports inline-form plan approval/rejection (Phase 10B) attributed to a managed operator dropdown (Phase 13A/B) with a legacy free-form name fallback.
+Vite + React + TypeScript operator console for the NeuroNOC backend. The console renders incidents, anomaly findings, events, evidence, agent runs, RCA explanations, remediation plans, validation previews, runbook search, telemetry preview fixtures, and operator management; exposes action buttons that hit the backend live; gates remediation approval behind Phase 23 bearer-token login + `role=admin` enforcement.
 
 ## Setup
 
@@ -84,7 +84,7 @@ This is the full path for a visual walk-through of every UI section.
 
 9. **Click `Generate remediation plan`**. A new `Remediation plans` card appears with `risk medium · BGP neighbor recovery - investigate L1 and soft-reset session (draft)`. Open the `<details>` to see the human-readable summary plus the full plan JSON. **Nothing executes** — this is plan-only by design.
 
-10. **Create a local operator** (Phase 13B inline panel). Above the incident list there's a compact **Operators** strip. Click `+ Add operator`, type a `display_name`, pick a role (`operator` / `admin`), click `Create operator`. The new operator chip appears immediately and is available in step 12's approval dropdown. Operators are minimal local identity rows — **not a login system**: no password, no token, no RBAC enforcement. The `role` column is purely advisory.
+10. **Create a local operator** (Phase 13B inline panel). Above the incident list there's a compact **Operators** strip. Click `+ Add operator`, type a `display_name`, pick a role (`operator` / `admin`), click `Create operator`. The new operator chip appears immediately. The OperatorsPanel itself is unauthenticated and operators created here ship with `password_hash=NULL` — they're directory rows only and cannot log in until a password is set (`uv run python -m app.operators.seed --name <name> --password <pw>`). For demo purposes the e2e suite seeds `local-operator` with `--password demo-password` so step 11b can log in immediately.
 
 10b. **Search runbooks (Phase 17B).** Below the Operators strip there's a compact **Runbooks** panel with a search input, a `Search` button, and a `Use selected incident` button. Type something like `bgp neighbor` and hit Enter or click Search — the deterministic Phase 17A keyword scorer ranks the bundled Markdown runbooks (`app/knowledge/runbooks/*.md`) and the panel lists the top 5 hits with title, file path (`<slug>.md`), score, and a bounded ~280-char excerpt. With an incident selected, `Use selected incident` instead derives the query from that incident's title + type + summary, so for the BGP scenario it surfaces `bgp.md` first. **Excerpt-only and read-only** — the full Markdown file is never fetched or rendered. No embeddings, no LLM call, no network hop beyond `/api/runbooks/search`.
 
@@ -126,16 +126,15 @@ pnpm test:e2e              # headless
 pnpm test:e2e:headed       # watch it in a real window
 ```
 
-What it covers (8 tests, serial, single worker):
+What it covers (25 tests, serial, single worker, `retries: 0`):
 
-1. App loads and all 5 status cards render.
-2. Incident list renders the 5 seeded scenarios.
-3. BGP incident detail shows findings, events, evidence, and human-readable evidence refs (`evt:` / `ev:`).
-4. `Run agent analysis` adds a new agent-run card.
-5. `Generate remediation plan` adds a new plan card.
-6. **Phase 13B:** create an operator via the `Operators` management panel, assert the chip carries role + a created_at signal, assert a duplicate `display_name` produces a `role="alert"` 409 error, then approve a plan via the operator dropdown using the just-created operator.
-7. Approve a plan via the inline form (Phase 10B) using the pre-seeded `local-operator` and verify the approved badge + operator + note land on the card.
-8. `Generate RCA` shows an RCA explanation and the section survives once it appears (live Ollama or deterministic fallback, both fine).
+- **Smoke (Phases 9A–9C):** app loads, all 5 status cards render, incident list shows the 5 seeded scenarios, BGP incident detail renders findings/events/evidence with human-readable refs (`evt:` / `ev:`), `Run agent analysis` adds a run card, `Generate remediation plan` adds a plan card, `Generate RCA` shows the explanation and the section survives across re-renders.
+- **Agent inspector (Phase 15A/15B):** newest run exposes the 6 deterministic LangGraph step names, the `report` step payload renders, the header shows a duration token, step heads carry payload-shape chips, and the copy-report button surfaces an inline `Copied.` / `Copy failed.` status.
+- **Validation preview (Phase 16B):** the plan card's `Preview validation` block renders `executable: false`, `source: remediation_plan`, the `Pre-checks` and `Validation criteria` sections, and explicitly *omits* `proposed_commands` / `proposed_ansible_playbook`.
+- **Runbook search (Phase 17B):** `Use selected incident` on a BGP-shaped incident ranks `bgp.md` first; the rendered excerpt is bounded (<400 chars) and does NOT contain a string unique to later in the file.
+- **Telemetry preview (Phases 18C–20B, 9 tests):** panel caveat is visible, BGP sample correlates to `bgp_neighbor_down`, `persisted: false` pinned in both rendered output and route-intercepted response; invalid JSON shows an inline parse error AND fires zero correlate API calls; fixture picker swaps the textarea; the `unknown` fixture falls through to `telemetry_observation`; switching fixtures clears stale results; `Reset to sample` snaps to the active fixture (not always BGP); accessible-names + keyboard-only flow assertions; `Download JSON` writes the active fixture with a sanitized filename and zero API calls, including the raw-text path for invalid JSON.
+- **Operators (Phase 13B → Phase 23):** OperatorsPanel still creates operators; duplicate `display_name` surfaces an inline `role="alert"` 409 error with the typed value preserved.
+- **Auth + RBAC approval (Phase 23):** unauthenticated `Approve` button stays disabled with the explanatory tooltip; logging in as the pre-seeded `local-operator` (`demo-password`) unlocks the form and the approved badge + authenticated operator + note land on the card.
 
 The suite uses real backend / real Postgres / real Vite proxy — no mocks. UI-created `e2e-ui-op-…` operator rows accumulate in the dev DB across runs; see "UI-created operators accumulate" under the demo flow for the optional cleanup recipe.
 

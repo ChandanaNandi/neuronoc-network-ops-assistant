@@ -1,8 +1,8 @@
-# NeuroNOC FRR mini-lab (Phase 8B)
+# NeuroNOC FRR mini-lab (Phase 8B + Phase 21A/C/E)
 
 A small Docker Compose stack of four FRR v8.4.1 routers running eBGP. The stack is **independent** of the main NeuroNOC backend / Postgres / Ollama and can be brought up and down without affecting them.
 
-> **Phase 8B scope:** topology + BGP only. This lab is **not yet wired into the NeuroNOC backend.** Collector / telemetry integration lands in Phase 8C.
+The lab is wired into the NeuroNOC backend via the Phase 8C / 21A / 21E collector (`POST /api/lab/collect/snapshot`), which runs `docker exec` + `vtysh -c "show ..."` against the four `neuronoc-lab-*` containers and writes one tagged `[lab-collector]` incident per call (BGP + interface counters/status + route-table snapshot + running-config evidence). The collector is read-only by construction — `_assert_known_router` rejects any container outside the allow-list, and `_assert_show_command` rejects any vtysh command that doesn't start with `show ` or that contains a forbidden token (`clear`, `conf t`, `reload`, `delete`, `write`, etc.).
 
 ## Topology
 
@@ -197,8 +197,9 @@ We grep the JSON output of `vtysh -c 'show ip bgp summary json'` for `"state":"E
 
 If a future FRR version changes the JSON shape, healthchecks will fail closed (containers stay marked `unhealthy`) rather than passing incorrectly — that's intentional. Swap the grep for `jq` or a small Python check at that point.
 
-## What this lab is NOT (yet)
+## What this lab is NOT
 
-- It is **not** wired into the NeuroNOC backend. The collector that scrapes `show bgp summary` and feeds it into `IncidentEvent` rows lands in Phase 8C.
-- It does not run any remediation against itself. Phase 7 plans remain plan-only.
+- It does not run any remediation against itself. Phase 7 plans remain plan-only and Phase 23 gates approval behind `role=admin` — there is no execution path in the code regardless.
+- It does not produce route-withdrawal / packet-loss / latency / ACL-deny signals — those rules (R002, R004, R005, R006) remain simulator-only. A future firewall or traffic-generation component would be needed to drive them from real lab data.
+- It does not emit syslog into the collector (deferred — `docker logs` is mechanically possible but doesn't close any rule gap; the FRR lab logs to stdout).
 - It uses bridges only — no veth pairs, no L2 trunking, no EVPN. If we ever need those, the audit calls for switching to Lima + Containerlab (Phase 8A Option B).

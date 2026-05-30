@@ -457,7 +457,7 @@ Conventions:
 - The Phase 18B `/correlate/preview` endpoint remains explicitly non-persisting — same `persisted: Literal[False]` response, same row-count assertion still passes.
 - Same guardrails — no schema migration (Phase 22A's `created_incident_id` FK is what gets populated), no new dependency, no auth/RBAC, no background worker, no real device contact, no frontend work, no lab collector change.
 
-## Phase 23 — Auth + RBAC *(current)*
+## Phase 23 — Auth + RBAC ✓
 
 - **Makes remediation approval safety credible.** The Phase 13A/B operator concept is upgraded with local password auth + bearer-token sessions; approve/reject endpoints are 401 without auth and 403 without role=`admin`; audit fields come from the authenticated session, not arbitrary submitted strings. **Local dev auth, honest in docs** — production should swap in a real identity provider (SSO/SAML/OAuth).
 - **Migration `466922adacef`** (parent `82c1f3c27505`): adds `operators.password_hash VARCHAR(256) NULL` and creates `operator_sessions` (`id` UUID PK, `operator_id` FK CASCADE indexed, `token` VARCHAR(64) unique+indexed, `created_at`, `expires_at`). `password_hash` is nullable so prior operator rows remain representable — they just can't log in until a password is set.
@@ -482,6 +482,31 @@ Conventions:
   - E2E: `global-setup.ts` now passes `--password demo-password` when seeding `local-operator`. New `loginAs(page, name, password)` helper drives the real LoginPanel UI. Existing "create operator then approve" test reshaped into a focused "OperatorsPanel still creates operators" test (since approval no longer flows through the dropdown). New "Approval requires login: unauthenticated Approve stays disabled" test pins the gated-button contract. The remaining approval test is rewritten to `loginAs('local-operator', 'demo-password')` first, then drive the simplified form (no dropdown). 25/25 e2e total (was 24; +1).
 - **Backward compatibility honest, not bypassed**: existing non-approval APIs remain unauthenticated. Bearer tokens are accepted everywhere but ignored where auth isn't required. Legacy approval body fields are deliberately broken with 422 so stale callers fail loudly rather than silently bypassing auth.
 - Same guardrails as every prior phase — no LLM behavior change, no remediation execution, no telemetry/lab feature work, no external auth provider, no new pip dependency.
+
+## Phase 24 — Final packaging + demo readiness *(current)*
+
+- **Documentation-only finish phase — no application behavior change.** Brings every README and the roadmap up to date so a fresh reader (or a recruiter following the demo checklist) can land on the repo and run the full real-lab → snapshot → agent → RCA → plan → admin-approve flow without hitting a stale instruction.
+- Top-level `README.md` rewritten from the Phase 13B-era scope-section format into a finished portfolio README: what NeuroNOC is, the problem it addresses, the safety-first thesis, the real-vs-simulator data distinction, a Mermaid architecture diagram (React console → FastAPI backend → Postgres / Ollama / FRR lab, with the admin approval gate called out), the main user flow, the current feature set by phase, local run, test commands, a 16-step recruiter demo checklist (start Postgres → seed → start backend / frontend / lab → inject fault with `lab.sh` → collect snapshot → inspect findings → run agent analysis → generate RCA → generate plan → log in as admin → approve / reject → show no execution → heal → tear down), known limitations, future work.
+- `backend/README.md` Operators section rewritten: replaces the legacy Phase 13A `operator_id` / `operator_name` XOR contract with the Phase 23 auth + RBAC model — PBKDF2-SHA256, bearer-token sessions, `role=admin` gated approval, `extra="forbid"` on the body so stale callers fail 422, audit fields from the session not the body. Cross-links `/api/auth/login` / `/auth/me` / `/auth/logout`.
+- `frontend/README.md` updated: header now describes the Phase 23 login + role-gated approval; the OperatorsPanel step is honest that operators created in the UI ship with `password_hash=NULL` and can't log in until a password is set via the seed CLI; the e2e test count is corrected from 8 to 25 with a category breakdown (smoke, agent inspector, validation preview, runbook search, telemetry preview ×9, operators, auth + RBAC approval).
+- `infra/lab/README.md` updated: the "not yet wired into the NeuroNOC backend" callout is removed (Phase 21A/C/E wired it); "What this lab is NOT" lists the real outstanding gaps (no R002/R004/R005/R006 lab signal, no syslog ingest, bridges-only) instead of the outdated "no collector" claim.
+- `docs/roadmap.md` updated: Phase 23 marked ✓, Phase 24 added as *(current)*, project status summary appended below.
+- **Hard constraints honored**: no product features added, no backend capabilities added, no frontend capabilities added (no broken documented demo path was found, so zero application code changed), no schema migrations, no new dependencies, no split into 24A/24B.
+
+## Project status summary
+
+NeuroNOC is feature-complete through Phase 23 as a portfolio-scale demonstration of safety-first agentic NetOps. The implementation spans:
+
+- **Data plane**: Postgres 16 schema (5 incident-related tables + `operators` / `operator_sessions` / `agent_runs` / `agent_steps` / `telemetry_observations`), 6 Alembic migrations on linear ancestry (head: `466922adacef`).
+- **Backend**: FastAPI + SQLAlchemy 2 + psycopg 3, **268 pytest tests** passing, AST safety scans pinning the no-execution / no-network contracts on `app/remediation/`, `app/validation/`, `app/telemetry/`.
+- **Agent layer**: deterministic 6-node LangGraph workflow + 8 deterministic anomaly rules (R001–R008) + optional Ollama RCA (`qwen2.5:7b-instruct`) with a deterministic fallback.
+- **Lab**: 4-router FRR v8.4.1 Compose stack with read-only snapshot collector (BGP + interfaces + route table + running-config), `lab.sh inject` / `heal` fault-injection helper covering `bgp-down` and `iface-down` per canonical-peer mapping.
+- **Frontend**: Vite + React + TS strict, **25 Playwright e2e tests** (Chromium, serial, `retries: 0`), the full operator console (status grid, master/detail, agent run inspector, validation preview, runbook search, telemetry preview with 5 fixtures + sanitized export, login panel, operator management, plan cards with approval).
+- **Auth**: PBKDF2-SHA256 (600k iterations, OWASP 2023 floor), bearer-token sessions in `operator_sessions`, FastAPI `Depends(require_role("admin"))` gating remediation approval.
+- **CI**: GitHub Actions runs backend / frontend / e2e against a Postgres 16 service container on every push; Playwright captures retain-on-failure traces.
+- **Honest scope boundaries** documented end-to-end: 4 of 8 anomaly rules covered by real lab data; remediation is plan-only by hard contract; local dev auth, not production-grade; no continuous telemetry pipeline.
+
+The codebase is suitable as a working demonstration of agentic NetOps thinking with explicit safety contracts. It is intentionally not yet a production NetOps tool — see the "Future work" section of the top-level README for the next-frontier items (real IdP integration, continuous telemetry ingest, vector RAG, Kubernetes deployment).
 
 ## Beyond
 

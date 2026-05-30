@@ -1,324 +1,179 @@
 # NeuroNOC
 
-NeuroNOC is an open-source multi-agent AI NetOps platform for network anomaly detection, root-cause analysis, validation, and remediation planning.
+NeuroNOC is an open-source operator console for AI-assisted network operations: it collects read-only signals from a real lab (or synthetic simulator), detects anomalies with deterministic rules, runs a multi-step LangGraph workflow to assemble an incident analysis, generates an optional local-LLM root-cause explanation, drafts a structured remediation plan, and gates approval behind authenticated admin role-based access. **No remediation is ever executed.**
 
-## Phase 13B scope *(current)*
+Built as a portfolio-scale demonstration of AI-NetOps thinking: human-in-the-loop by construction, deterministic where determinism matters, LLM where it earns its keep, and explicit about the line between "this is real lab data" and "this is fabricated for demo purposes."
 
-**Local operator management UI** on top of the Phase 13A backend identity foundation. A compact `Operators` strip in the console lists existing operator rows (`display_name`, role chip, relative-age timestamp) and exposes a small inline create form (display_name + role select), so a fresh dev install no longer needs the CLI seed to start attributing approvals.
+## What problem this addresses
 
-- New `OperatorsPanel` component in the operator console. Operators state is lifted to `App` so the create form and the approval-form dropdown share a single source of truth — newly-created operators appear in the dropdown immediately, no page reload.
-- Duplicate `display_name` from the UI surfaces the backend 409 as an inline `role="alert"` error; the form stays open with the typed value intact.
-- **Still not production auth.** Same Phase 13A guardrails apply: no passwords, no tokens, no sessions, no JWT/OAuth/SSO, no RBAC enforcement; `role` is advisory only.
-- **No backend code changes, no migration, no new endpoints.** Phase 13B is frontend-only on top of the `GET /api/operators` and `POST /api/operators` endpoints shipped in Phase 13A.
+NetOps teams routinely fly blind: telemetry is noisy, root causes hide under three layers of symptoms, and the safe response to "the WAN edge BGP session just flapped" is usually a slow human pager-thread because no automated tool is trusted enough to act. NeuroNOC explores what a small, opinionated NetOps copilot looks like when the entire stack is built **safety-first from the schema up**:
 
-### Phase 13A — backend foundation (now ✓)
+- Every plan is `requires_approval=True` at the database level.
+- Approval is bound to a real authenticated `admin` session, not a free-text name field.
+- No module under `app/remediation/`, `app/api/remediation.py`, `app/validation/`, or `app/telemetry/` is allowed to `import` a remote-execution library — an AST scan fails the build if it ever happens.
+- The FRR lab collector only runs `show *` commands, only against an allow-listed set of container names, and rejects any vtysh invocation containing `clear` / `conf t` / `reload` / `delete` / `write` / etc.
 
-- Migration `33112e9b5b1c` added an `operators` table (id, display_name unique + indexed, role default `operator`, created_at) and a nullable `recommendations.approved_by_operator_id` FK (ON DELETE SET NULL) so historical approvals survive operator deletion.
-- API: `GET /api/operators`, `POST /api/operators` (409 on duplicate `display_name`).
-- Idempotent seed CLI: `uv run python -m app.operators.seed --name local-operator --role admin`.
-- Approval payload accepts **either** `operator_id` (resolves to display_name + FK) **or** legacy `operator_name` (string verbatim, no FK). Exactly one required (XOR enforced at both schema + planner-helper layers); 422 if neither or both, 404 if `operator_id` is unknown.
+The system is not yet a production NetOps tool. It is a working portfolio piece that demonstrates the architecture, the safety contracts, and the deterministic-and-LLM hybrid agent flow end-to-end on a real (FRR Compose) lab.
 
-## Phase 10A scope
+## Safety-first principle
 
-**Remediation approval workflow stub.** Persists a `pending` / `approved` / `rejected` state on every remediation plan plus operator name + timestamp + free-text note. **Approving still does not execute anything** — there is no execution path in the code. This is recorded intent only, intended to make the human-in-the-loop a real database row instead of just a `requires_approval=True` flag.
+Every phase preserves the same guardrails:
 
-- 1 small forward-only migration (`f78faa47f6bd`) adds 4 columns to `recommendations`: `approval_status` (NOT NULL, server-defaults to `'pending'`, indexed), `approved_by`, `approved_at`, `approval_note`. Existing rows fill with `pending` at ALTER TABLE time.
-- New API: `POST /api/remediation/recommendations/{id}/approve` and `/reject` with `{operator_name, note}` body. 404 if missing, 400 if recommendation_type ≠ `remediation_plan`, idempotent same-state calls update the metadata.
-- No auth (the spec is "no auth yet" — operator_name is supplied by caller, persisted verbatim).
-- The Phase 7 "no remote-execution imports" safety scan now covers both `app/remediation/` AND `app/api/remediation.py`, so approval code can't silently acquire an execution dependency.
-- UI: every remediation plan card shows the approval badge plus `Approve` / `Reject` buttons; clicking either prompts for operator name + optional note, persists the decision, and refreshes the panel. A caveat line ("Plan-only … nothing is executed") sits above the card list.
+1. **No execution path exists in code.** The remediation planner produces plans only; the validation preview omits `proposed_commands` / `proposed_ansible_playbook` so it can't be mistaken for an actionable artifact; the lab collector is `show`-only and runs against an allow-listed container set.
+2. **Approval is authenticated and role-gated.** `POST /api/remediation/recommendations/{id}/approve` returns 401 without a bearer token and 403 without `role=admin`. The audit row's `approved_by` / `approved_by_operator_id` are taken from the session, never from the request body.
+3. **AST safety scans run in CI.** Any import of `subprocess` / `paramiko` / `netmiko` / `napalm` / `ansible_runner` / `pysnmp` / `socket` / etc. inside the protected packages fails the build.
+4. **Ansible drafts gate every risky task on `when: false`** plus a `REQUIRES APPROVED CHANGE WINDOW` comment, so the file cannot run as-is even if someone hand-extracts it.
+5. **Local-only LLM.** RCA uses local Ollama or a deterministic fallback; no cloud LLM dependency was added at any phase.
 
-## Phase 8C scope
+## Real lab data vs simulator/demo data
 
-**One-shot collector** that scrapes the Phase 8B FRR Compose lab over `docker exec` + `vtysh -c "show ... json"` and writes the BGP state into the existing `Incident` / `IncidentEvent` tables. **No schema change.** No background daemon, no scheduler, no loop — each invocation produces one fresh tagged `Incident` plus one `IncidentEvent` per peer (plus an aggregate snapshot event per router, plus a `lab_bgp_collection_error` event for any router we couldn't reach).
+NeuroNOC carries two parallel data sources. Both populate the same `incidents` / `incident_events` / `incident_evidence` schema, so the downstream agent / RCA / planning chain treats them uniformly. **Where they came from is always tagged on `summary`.**
 
-- Read-only towards the lab: only `show ip bgp summary json`. No `clear`, no `conf t`, no config edits.
-- Per-collection `Incident.summary` is prefixed `[lab-collector]` so it can be filtered separately from operator-created incidents and Phase 3 simulator data.
-- Event types: `lab_bgp_peer_established`, `lab_bgp_peer_not_established`, `lab_bgp_prefix_snapshot` (one per router), `lab_bgp_collection_error` (one per unreachable router).
-- Incident severity derived: `low` if every peer is Established, `medium` if any peer is not, `high` if any router could not be scraped.
-- API: `POST /api/lab/collect/bgp` (sync; returns a `LabBgpCollectionSummary`).
-- CLI: `uv run python -m app.lab.collector --collect` (prints the same summary as JSON).
+| Source | Tag prefix | What it is | Where it comes from |
+|---|---|---|---|
+| Simulator (Phase 3) | `[simulator]` | 5 hand-written scenarios (BGP down, interface errors, latency spike, route missing, ACL block) | `python -m app.simulator.seed --scenario all` — pure deterministic data |
+| FRR lab collector (Phase 8C / 21A / 21E) | `[lab-collector]` | Read-only snapshot of a 4-router FRR Compose lab: BGP state + interface counters/status + route table + running-config | `POST /api/lab/collect/snapshot` — runs `docker exec` + `vtysh -c "show ..."` against the lab |
+| Manual telemetry observations (Phase 22A/B) | derived | Operator-submitted (or test-fed) `TelemetryEvent` payloads persisted into `telemetry_observations` and optionally correlated into an Incident | `POST /api/telemetry/observations` + `POST /api/telemetry/observations/{id}/correlate` |
 
-Phases 0–8B remain intact. See `docs/roadmap.md` for what lands when.
+**Real-lab anomaly coverage after Phase 21E:** 4 of 8 rules fire from real lab data (R001 `bgp_neighbor_down_detected`, R003 `interface_error_spike_detected`, R007 `route_missing_detected`, R008 `link_down_detected`). The remaining 4 rules (R002 route withdrawal, R004 packet loss, R005 latency spike, R006 ACL deny) are simulator-only — the FRR lab does not produce those signals.
 
-## Phase 7 scope
+## Architecture
 
-**Remediation plan generation — DRAFTS ONLY, never executed.** Turns a Phase 5 incident analysis (and optional Phase 6 RCA) into a structured `RemediationPlan` with pre-checks, proposed commands, an Ansible playbook draft, post-checks, rollback steps, validation criteria, and safety notes. **Every plan is hard-pinned `requires_approval=True`. Nothing is run.**
+```mermaid
+flowchart LR
+    subgraph Console["React + TypeScript operator console (Vite)"]
+        UI[Incident list + detail<br/>Anomaly findings • events • evidence<br/>Agent run inspector<br/>RCA + runbook search<br/>Plan cards + validation preview]
+        LoginUI[Login panel<br/>+ Operator management]
+        TelemUI[Telemetry preview panel<br/>5 fixtures · download · keyboard a11y]
+    end
 
-- Plan-only: NO `subprocess`, NO `ansible_runner`, NO `netmiko`, NO `napalm`, NO device connections. A test scans `app/remediation/` and fails the build if any of those tokens are imported.
-- Reuses the existing `recommendations` table — **no schema change, no migration**. Plans are persisted as `Recommendation` rows with `recommendation_type="remediation_plan"`; the full structured plan is stored in `details` as a readable summary + fenced JSON block.
-- 5 specific templates + 1 default: `bgp_neighbor_down`, `interface_errors_spike`, `latency_spike`, `route_missing`, `acl_blocking_traffic`, plus a generic fallback that explicitly demands manual investigation.
-- Risky Ansible tasks are gated on `when: false` so the draft cannot run as-is even if someone forgets to read the comments.
-- API: `POST /api/remediation/incidents/{id}/plan` (creates + persists), `GET /api/remediation/incidents/{id}/plans` (lists persisted plans newest-first, limit 1–100).
-- CLI: `uv run python -m app.remediation.planner --incident-id <uuid> [--persist | --no-persist]`.
+    subgraph Backend["FastAPI backend (Python 3.12, uv)"]
+        AuthAPI[Auth API<br/>PBKDF2-SHA256 + bearer tokens]
+        IncidentsAPI[Incidents / events / evidence]
+        AnomalyEngine[Anomaly engine<br/>8 deterministic rules R001-R008]
+        AgentWF[LangGraph workflow<br/>6 deterministic nodes]
+        RCAExp[RCA explainer<br/>+ keyword runbook retrieval]
+        Planner[Remediation planner<br/>6 templates · plan-only]
+        ValidationAPI[Validation preview API<br/>pre/post checks, rollback, safety notes]
+        TelemetryAPI[Telemetry observations API<br/>persist · list · correlate]
+        LabAPI[Lab snapshot collector API<br/>BGP + interfaces + routes + config]
+    end
 
-Phases 0–6 remain intact. See `docs/roadmap.md` for what lands when.
+    subgraph DataPlane["Data plane"]
+        PG[(Postgres 16)]
+        Ollama[Local Ollama<br/>qwen2.5:7b-instruct<br/>optional]
+        Lab[FRR v8.4.1 Compose lab<br/>edge-1 · edge-2 · core-1 · branch-1<br/>eBGP fully Established]
+    end
 
-## Repo layout
+    Console -- HTTP/JSON via Vite proxy --> Backend
+
+    AuthAPI --> PG
+    IncidentsAPI --> PG
+    AgentWF --> PG
+    Planner --> PG
+    TelemetryAPI --> PG
+    LabAPI --> PG
+
+    AnomalyEngine -. reads .-> PG
+    RCAExp -. reads .-> PG
+    ValidationAPI -. reads .-> PG
+
+    RCAExp -. optional .-> Ollama
+    LabAPI -- docker exec + vtysh<br/>show * read-only --> Lab
+
+    AuthGate{{Admin approval gate<br/>401 unauth · 403 non-admin}}
+    Planner --> AuthGate
+    AuthAPI --> AuthGate
+    AuthGate -- intent only<br/>never executes --> PG
+```
+
+## Main user flow
 
 ```
-backend/    FastAPI app (Python 3.12, managed with uv)
-frontend/   Vite + React + TS (managed with pnpm)
-infra/      Docker support files (Postgres init.sql today)
-docs/       architecture.md, roadmap.md
-docker-compose.yml
-.env.example
-SETUP_STATUS.md   # local-env audit + Phase 0 readiness record
+Inject lab fault              →  Collect lab snapshot         →  Inspect findings
+(lab.sh inject ...)              (one click in console)          (anomaly + events + evidence)
+
+       ↓                                                              ↓
+
+Approve / reject as admin     ←  Generate remediation plan    ←  Generate RCA + runbook hits
+(bearer-token + role=admin)      (plan-only · requires_approval)  (Ollama or deterministic fallback)
 ```
+
+Each step is a single console button click; the underlying API responses are stored in Postgres and re-render the right-hand detail pane. No background jobs, no scheduler — every action is an explicit operator request.
+
+## Current feature set
+
+| Phase | Surface | What it does |
+|---|---|---|
+| 1–2 | Backend / Postgres | FastAPI + SQLAlchemy 2 + Alembic; `devices` / `incidents` / `incident_events` / `incident_evidence` / `recommendations` tables |
+| 3 | Simulator | 5 deterministic scenarios; CLI + API; surgical `--reset` |
+| 4 | Anomaly engine | 8 deterministic rules (R001–R008), no ML |
+| 5 | Agent workflow | LangGraph 1.x StateGraph, 6 nodes, per-step audit in `agent_runs` / `agent_steps` |
+| 6 | RCA | Optional local Ollama (`qwen2.5:7b-instruct`); deterministic fallback when unreachable |
+| 7 | Remediation | Plan-only, 6 templates, AST scan blocks execution-library imports |
+| 8B/8C | FRR lab + collector | 4-router Compose lab + read-only `docker exec` + vtysh collector |
+| 9A–9C | Operator console | React + TS master/detail, action buttons, demo flow doc |
+| 10A/10B | Approval workflow | `approval_status` + audit columns, inline approval form |
+| 11A | Watch loop | Bounded dev-only `--watch --iterations N` (≤100, ≤3600 s) |
+| 12A | Playwright e2e | Chromium smoke against real backend + real Postgres + real Vite proxy |
+| 13A/13B | Operators | `operators` table + UI panel for creating/listing operators |
+| 14A/14B | CI | GitHub Actions (backend / frontend / e2e jobs) + Playwright failure traces |
+| 15A/15B | Agent inspector | Step-by-step run inspector, duration, payload-shape chips, copy-report |
+| 16A/16B | Validation preview | `GET /api/validation/recommendations/{id}/preview`; UI block; commands intentionally omitted |
+| 17A/17B | Runbook search | Deterministic keyword retrieval over bundled Markdown runbooks; UI panel |
+| 18A–20B | Telemetry preview | `TelemetryEvent` schema, validate + correlate endpoints (no persistence yet), UI panel with 5 fixtures, sanitized JSON export |
+| 21A | Lab snapshot collector | Umbrella `POST /api/lab/collect/snapshot`: BGP + interfaces + running-config |
+| 21B | Demo-path e2e | End-to-end test pinning lab snapshot → agent → RCA → planner chain |
+| 21C | Lab → anomaly | Lab events feed R001 / R003 / R008 → planner picks specific templates |
+| 21D | Lab fault injection | `lab.sh inject bgp-down <router>` / `lab.sh inject iface-down <router> <iface>` + smoke test |
+| 21E | Route-table snapshots | Lab collector reads `show ip route json`, emits `lab_route_missing` → R007 |
+| 22A | Telemetry persistence | `telemetry_observations` table + persist/list/get endpoints |
+| 22B | Telemetry → incident | `POST /api/telemetry/observations/{id}/correlate` — deterministic, idempotent, on-demand |
+| 23 | Auth + RBAC | PBKDF2-SHA256 passwords, bearer-token sessions, role-gated approval (admin only) |
+| 24 | Packaging + docs | This README, demo checklist, roadmap status summary |
 
 ## Prerequisites
 
-- macOS / Linux
+- macOS or Linux
 - Docker Desktop (or Docker Engine + Compose v2)
 - Python 3.12 and [uv](https://docs.astral.sh/uv/)
 - Node 20+ and pnpm 10+
-- Ollama running on host port 11434 (only needed from Phase 6 onward; the dashboard does not call it yet)
+- *(Optional, for live RCA)* Ollama on host port 11434 with `qwen2.5:7b-instruct` pulled
+- *(Optional, for the lab demo)* `frrouting/frr:v8.4.1` image cached locally
 
-## Start Postgres (Docker)
+## Run locally
+
+### 1. Start Postgres
 
 ```bash
 docker compose up -d postgres
-docker compose ps
 ```
 
-Postgres listens on **`localhost:5433`** (mapped to the container's 5432). Data persists in the named volume `neuronoc_postgres_data`.
+Postgres listens on `localhost:5433`. Dev credentials: `neuronoc / neuronoc_dev_password / neuronoc`.
 
-Stop it with:
-
-```bash
-docker compose stop postgres   # keep data
-# or
-docker compose down            # remove container, keep volume
-```
-
-Connect with `psql` (the bare `postgresql://` URL — psql does not understand the `+psycopg` driver suffix used by SQLAlchemy):
-
-```bash
-psql "postgresql://neuronoc:neuronoc_dev_password@localhost:5433/neuronoc"
-```
-
-## Database migrations
-
-The backend uses Alembic. From `backend/`:
-
-```bash
-uv run alembic upgrade head            # apply all migrations
-uv run alembic revision --autogenerate -m "describe change"   # after editing models
-uv run alembic downgrade -1            # roll back last migration
-uv run alembic history                 # show migration history
-```
-
-`alembic/env.py` reads `DATABASE_URL` from `app.core.config.settings`, so there is one source of truth — set it in the root `.env`.
-
-## Run the backend
+### 2. Backend
 
 ```bash
 cd backend
 uv sync
-uv run alembic upgrade head            # ensure schema exists (idempotent)
-uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+uv run alembic upgrade head            # idempotent; current head: 466922adacef (Phase 23)
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Smoke test:
+Interactive API docs: `http://127.0.0.1:8000/docs`.
 
-```bash
-curl -s http://127.0.0.1:8000/health
-# {"status":"ok","service":"neuronoc-backend"}
-
-curl -s http://127.0.0.1:8000/api/incidents | jq .
-```
-
-Run tests (requires Postgres running on `localhost:5433` with the schema applied):
+### 3. Seed simulator data + the demo admin operator
 
 ```bash
 cd backend
-uv run pytest -q
+uv run python -m app.simulator.seed --reset
+uv run python -m app.simulator.seed --scenario all
+uv run python -m app.operators.seed --name local-operator --role admin --password demo-password
 ```
 
-Tests run against the real Postgres but wrap each test in a transaction that is rolled back at the end, so they never persist data into your dev database.
+The seed CLI is idempotent — re-running with `--password` rotates the hash on the existing row.
 
-## Seed simulated incidents (Phase 3)
-
-```bash
-cd backend
-
-uv run python -m app.simulator.seed --scenario all              # seed all 5 scenarios
-uv run python -m app.simulator.seed --scenario bgp_neighbor_down # seed one
-uv run python -m app.simulator.seed --reset                      # remove simulator data
-```
-
-Or via the API (after starting the backend):
-
-```bash
-curl -X POST 'http://127.0.0.1:8000/api/simulator/seed?scenario=all'
-curl -X POST  http://127.0.0.1:8000/api/simulator/reset
-```
-
-`--reset` only deletes incidents that the simulator created (marked `[simulator]` in `summary`). It leaves the four simulator devices in place and does not touch any operator-created incidents. There is no `--reset-devices` flag yet; if you ever need to start over, delete the devices manually via `psql`.
-
-**Important:** this is fabricated data for development. Real telemetry collection (SNMP, syslog, streaming) lands in a later phase.
-
-## Run the anomaly engine (Phase 4)
-
-CLI:
-
-```bash
-cd backend
-
-# one incident (get the id from the simulator output, or `GET /api/incidents`)
-uv run python -m app.anomaly.engine --incident-id <uuid>
-
-# every currently-open incident
-uv run python -m app.anomaly.engine --open --limit 50
-```
-
-Output is a JSON array of `AnomalyFinding` objects (rule_id, rule_name, severity, confidence, summary, evidence_refs, recommended_next_step).
-
-HTTP:
-
-```bash
-curl -s http://127.0.0.1:8000/api/anomalies/open?limit=50 | jq .
-curl -s http://127.0.0.1:8000/api/anomalies/incidents/<uuid> | jq .
-```
-
-The engine is **deterministic and rule-based** — no ML. Findings are *not* persisted anywhere; they are recomputed on every request from the underlying incident / event / evidence rows.
-
-## Run the agent workflow (Phase 5)
-
-CLI:
-
-```bash
-cd backend
-
-# get an incident id (e.g. from the simulator)
-uv run python -m app.simulator.seed --scenario bgp_neighbor_down
-
-# run the full LangGraph workflow against that incident
-uv run python -m app.agents.runner --incident-id <uuid>
-```
-
-The CLI prints the `IncidentAnalysisReport` as JSON. The `AgentRun` row and its 6 `AgentStep` rows are persisted to Postgres for audit.
-
-HTTP:
-
-```bash
-# run the workflow (synchronous, returns the completed run + all steps)
-curl -X POST http://127.0.0.1:8000/api/agents/incidents/<uuid>/analyze | jq .
-
-# fetch one run with its steps
-curl -s http://127.0.0.1:8000/api/agents/runs/<run_uuid> | jq .
-
-# list runs for an incident, newest first
-curl -s 'http://127.0.0.1:8000/api/agents/incidents/<uuid>/runs?limit=20' | jq .
-```
-
-The agents are **deterministic Python nodes coordinated by LangGraph** — no LLM calls, no model inference. Phase 6 will introduce Ollama-backed reasoning under the same orchestration shape.
-
-## Generate RCA explanations (Phase 6, optional Ollama)
-
-CLI:
-
-```bash
-cd backend
-
-# Uses Ollama if it is reachable; otherwise prints a deterministic fallback.
-uv run python -m app.rca.explainer --incident-id <uuid>
-
-# Override the model (default OLLAMA_MODEL):
-uv run python -m app.rca.explainer --incident-id <uuid> --model qwen2.5:14b-instruct
-
-# Fail loudly when Ollama is unreachable instead of falling back:
-uv run python -m app.rca.explainer --incident-id <uuid> --require-llm
-```
-
-HTTP:
-
-```bash
-# Synchronous; returns 200 with a deterministic fallback if Ollama is down.
-curl -s -X POST 'http://127.0.0.1:8000/api/rca/incidents/<uuid>/explain' | jq .
-
-# require_llm=true returns 503 if Ollama is down (good for "experimental" UI badges).
-curl -s -X POST 'http://127.0.0.1:8000/api/rca/incidents/<uuid>/explain?require_llm=true' | jq .
-```
-
-Configuration:
-
-```
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:7b-instruct      # 7b for fast triage; bump to 14b for richer reasoning
-```
-
-Notes:
-
-- The prompt explicitly tells the model to *use only provided evidence and runbook snippets*, never to invent commands / hostnames / prefixes / AS numbers.
-- Runbooks live in `backend/app/knowledge/runbooks/*.md`. Retrieval is **keyword-based** (deterministic, no embeddings, no vector store) — real RAG arrives later if and when retrieval quality becomes the bottleneck.
-- The explainer **never** executes a remediation action. Every actionable step is gated on explicit human approval.
-- Ollama is required to run on the **host** (Apple Metal GPU); containerized Ollama on macOS is CPU-only and ~10–20× slower.
-
-## Collect from the FRR lab (Phase 8C, one-shot)
-
-Bring the Phase 8B lab up first (`./infra/lab/scripts/lab.sh up`), then:
-
-```bash
-cd backend
-
-# One synchronous collection. Prints a JSON summary; writes one Incident +
-# per-peer events to Postgres.
-uv run python -m app.lab.collector --collect
-```
-
-HTTP:
-
-```bash
-# Equivalent to the CLI; returns the same summary shape.
-curl -s -X POST http://127.0.0.1:8000/api/lab/collect/bgp | jq .
-```
-
-Each invocation creates a fresh `Incident` tagged `[lab-collector]` plus one `IncidentEvent` per peer. Re-running gives you another fresh row — there is no background ingester yet, that is intentionally out of scope.
-
-**Dev-only bounded loop** (Phase 11A — see `backend/README.md` for details):
-
-```bash
-uv run python -m app.lab.collector --watch --iterations 6 --interval-seconds 10
-```
-
-Hard caps: 1–100 iterations, 1–3600 s interval. No `--forever`, no daemon, no background scheduler. Exits cleanly after N iterations.
-
-The collector calls `docker exec neuronoc-lab-<router> vtysh -c "show ip bgp summary json"`; it never touches a config-changing command. If a router is down or its output isn't JSON, you get a `lab_bgp_collection_error` event instead of a crash.
-
-## Generate a remediation plan (Phase 7, plan-only)
-
-CLI:
-
-```bash
-cd backend
-
-# Generate + persist a draft plan (default).
-uv run python -m app.remediation.planner --incident-id <uuid>
-
-# Print without persisting.
-uv run python -m app.remediation.planner --incident-id <uuid> --no-persist
-```
-
-HTTP:
-
-```bash
-# Generate + persist; returns the structured RemediationPlan.
-curl -s -X POST 'http://127.0.0.1:8000/api/remediation/incidents/<uuid>/plan' | jq .
-
-# List previously-persisted plans for an incident, newest first.
-curl -s 'http://127.0.0.1:8000/api/remediation/incidents/<uuid>/plans?limit=20' | jq .
-```
-
-Hard safety contract:
-
-- **Nothing is ever executed.** The planner does not shell out, run Ansible, or open a device connection. A CI test parses every `.py` file under `app/remediation/` with the Python AST and fails the build if any actual `import` statement pulls in a remote-execution library (the list lives only in the test).
-- Every plan is `requires_approval=True` (re-asserted in the persistence layer as defence-in-depth).
-- Every plan includes pre-checks, post-checks, **rollback steps**, validation criteria, and safety notes.
-- The Ansible draft is non-executable: risky tasks carry `when: false` plus an explicit `REQUIRES APPROVED CHANGE WINDOW` comment.
-- The `interface_errors_spike` template explicitly does not propose a config change as the first action — observation comes first.
-
-## Run the frontend
+### 4. Frontend
 
 ```bash
 cd frontend
@@ -326,64 +181,179 @@ pnpm install
 pnpm dev
 ```
 
-Open `http://localhost:5173`. The dashboard renders a static shell; all status indicators show "unknown" until later phases wire up the live checks.
+Open `http://localhost:5173`. The Vite dev server proxies `/api/*` and `/health` to `http://127.0.0.1:8000`, so no CORS setup is needed.
 
-Production-style build:
+### 5. (Optional) Bring up the FRR lab for the real-data demo path
+
+```bash
+./infra/lab/scripts/lab.sh up
+./infra/lab/scripts/lab.sh bgp all      # every session should be Established
+```
+
+## Run tests
+
+### Backend
+
+```bash
+cd backend
+uv run pytest -q
+```
+
+268 tests as of Phase 23. Each test runs inside a savepoint that's rolled back at teardown, so the dev DB stays clean. Requires Postgres up on `localhost:5433`.
+
+### Frontend build (type-check + bundle)
 
 ```bash
 cd frontend
-pnpm build
+pnpm build       # tsc -b && vite build under strict TypeScript
 ```
 
-## Configuration
-
-A **single `.env` file at the project root** is shared by Docker Compose (variable interpolation) and the backend (loaded by `pydantic-settings`). Set it up once:
+### Playwright e2e (real backend + real Postgres + real Vite)
 
 ```bash
-cp .env.example .env
+cd frontend
+pnpm exec playwright install chromium    # one-time, ~100 MB
+pnpm test:e2e                            # headless
+pnpm test:e2e:headed                     # watch in a real window
 ```
 
-Environment variables exported in your shell always override values from `.env`.
+25 tests, serial, single worker, `retries: 0`. The harness auto-starts both dev servers via Playwright's `webServer` config. `globalSetup` resets + re-seeds the simulator and seeds `local-operator` (with the Phase 23 demo password); `globalTeardown` resets simulator data so the dev DB is left as it was found.
 
-## Continuous integration
+### Lab helper smoke (no Docker required)
 
-GitHub Actions runs the same local-quality gates on every PR and push (config: `.github/workflows/ci.yml`):
+```bash
+./infra/lab/scripts/test_lab.sh
+```
 
-- **Backend job** — Python 3.12 + uv, `uv sync`, `alembic upgrade head`, `uv run pytest -q` against a Postgres 16 service container on the same `localhost:5433` / `neuronoc / neuronoc_dev_password / neuronoc` dev defaults used locally.
-- **Frontend job** — Node 20 + pnpm 10, `pnpm install --frozen-lockfile`, `pnpm build` (`tsc -b && vite build` under strict TypeScript).
-- **E2E job** — Playwright Chromium smoke against real backend + real Vite proxy + the same Postgres service container; Playwright's own `webServer` config starts uvicorn and Vite. Runs in parallel with the other two jobs (does its own setup; no artifact handoff). On failure, the `playwright-report` and `test-results` directories are uploaded as a build artifact.
+33 assertions in <1 s. Fake-`docker`-on-PATH capture pins the exact vtysh / `ip link` command strings `lab.sh inject` / `heal` emit per fault.
 
-### Playwright artifacts on CI failure
+### CI (GitHub Actions)
 
-The CI workflow uploads two paths whenever the e2e job fails (artifact name `playwright-report`, retention 7 days):
+`.github/workflows/ci.yml` runs the backend / frontend / e2e jobs in parallel on every push and PR against a Postgres 16 service container. The FRR lab and Ollama are not run in CI (Docker-in-Docker / no GPU); the e2e RCA test accepts either a live model line or the deterministic fallback so the gate stays green either way.
 
-- `frontend/playwright-report/` — the standard Playwright HTML report (open `index.html` to navigate it).
-- `frontend/test-results/` — per-test directories containing **screenshots** for failing assertions and a `trace.zip` for the failing run. Open a trace via the [Playwright trace viewer](https://trace.playwright.dev/) — drag-and-drop the `trace.zip`, or `pnpm exec playwright show-trace path/to/trace.zip` locally.
+## Demo checklist (recruiter-facing walkthrough)
 
-Trace behaviour is environment-aware (`playwright.config.ts`):
+Run this top-to-bottom for a live demo. Every step is one command or one click.
 
-- **CI** (`process.env.CI` set): `trace: 'retain-on-failure'` — a trace is captured for every test, kept only for the failing ones. This works even though `retries: 0`, which is what we want — flakes stay visible, not silently retried.
-- **Local**: `trace: 'on-first-retry'` — lighter default; no trace bundles written on green runs.
+```
+[ ]  1. Start Postgres
+        docker compose up -d postgres
 
-**Not run in CI by design:**
+[ ]  2. Apply schema + seed simulator + seed the admin operator
+        cd backend
+        uv run alembic upgrade head
+        uv run python -m app.simulator.seed --reset
+        uv run python -m app.simulator.seed --scenario all
+        uv run python -m app.operators.seed --name local-operator --role admin --password demo-password
 
-- The Phase 8B FRR Compose lab and the Phase 8C lab collector — they need FRR images and Docker-in-Docker; out of scope for this gate.
-- Ollama / `qwen2.5:*` — no GPU in CI runners, no model download. The Phase 6 RCA path is fallback-friendly, so the Playwright RCA test accepts either a live `RCA via <model>` line or the deterministic `RCA fallback used` message.
+[ ]  3. Start the backend (terminal A)
+        cd backend && uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
 
-CI is purely a verification gate; nothing in production behavior depends on it.
+[ ]  4. Start the frontend (terminal B)
+        cd frontend && pnpm dev
+        # Open http://localhost:5173
 
-## Intentionally NOT implemented yet
+[ ]  5. Start the FRR lab (terminal C)
+        ./infra/lab/scripts/lab.sh up
+        ./infra/lab/scripts/lab.sh bgp all          # confirm Established baseline
 
-- **Real** telemetry collection (SNMP / syslog / streaming) — Phase 3 ships synthetic data only
-- ML / learned anomaly detection — Phase 4 ships deterministic rules only
-- Cloud LLMs (OpenAI / Anthropic / etc.) — Phase 6 ships local-Ollama only, with a deterministic fallback
-- Vector RAG — Phase 6 ships keyword retrieval over bundled Markdown runbooks
-- Remediation **execution** — Phase 7 ships plan-only drafts. No Ansible run, no device contact, no automatic remediation. Approval and human application are required.
-- Containerlab network simulation (Phase 8)
-- Authentication / authorization
-- Async DB / queueing
-- Production deployment (k8s, helm, observability stack)
+[ ]  6. Inject a real lab fault
+        ./infra/lab/scripts/lab.sh inject bgp-down edge-1
+        # (or, richer mixed-fault: lab.sh inject iface-down edge-1 eth0)
+
+[ ]  7. In the operator console header, click "Collect lab snapshot"
+        → A new Incident appears tagged [lab-collector],
+          incident_type=lab_full_snapshot, severity=medium (or higher).
+
+[ ]  8. Click that Incident in the list. The detail pane should show:
+        - Anomaly findings: bgp_neighbor_down_detected (R001),
+          plus link_down_detected (R008) if you injected iface-down.
+        - Events: lab_bgp_peer_not_established, lab_interface_status,
+          and any lab_route_missing if route-table coverage triggered.
+        - Evidence: per-router running_config_snapshot and
+          route_table_snapshot rows.
+
+[ ]  9. Click "Run agent analysis"
+        → Phase 5 LangGraph runs 6 deterministic nodes;
+          new agent-run card lists every step; expand any one to see
+          input/output payloads in the inspector.
+
+[ ] 10. Click "Generate RCA"
+        → If Ollama is up: "RCA via qwen2.5:7b-instruct".
+        → If not: "RCA (deterministic fallback)". Either is fine.
+          The RCA section persists across re-renders (Phase 9A polish).
+
+[ ] 11. Click "Generate remediation plan"
+        → A plan card appears with risk badge + plan_type
+          (specific template, NOT generic_investigation, because
+          Phase 21C maps lab events to specific findings).
+        → Click "Preview validation": only pre-checks / post-checks /
+          validation criteria / rollback steps / safety notes render.
+          proposed_commands and proposed_ansible_playbook are
+          intentionally absent — the response can't be mistaken for
+          an executable artifact.
+
+[ ] 12. In the Login panel, log in
+        display_name: local-operator
+        password:     demo-password
+        → "Logged in as local-operator [admin]".
+
+[ ] 13. Back on the plan card, click "Approve" (or "Reject").
+        Confirm. The badge flips to approved/rejected; the audit
+        line shows the authenticated operator's display_name + role
+        + timestamp + note.
+        → Backend recorded the approval intent.
+        → Nothing was executed. There is no execution path in code.
+
+[ ] 14. (Optional) Show the safety contracts directly
+        cd backend
+        uv run pytest -q tests/test_remediation.py::test_remediation_package_blocks_execution_library_imports
+        uv run pytest -q tests/test_telemetry.py::test_telemetry_package_blocks_network_and_execution_imports
+
+[ ] 15. Heal the lab
+        ./infra/lab/scripts/lab.sh heal bgp-down edge-1
+        sleep 35                                 # let BGP hold-timer reconverge
+        ./infra/lab/scripts/lab.sh bgp all       # back to Established
+
+[ ] 16. Tear down
+        ./infra/lab/scripts/lab.sh down
+        cd backend && uv run python -m app.simulator.seed --reset
+        # Ctrl-C the dev servers; docker compose stop postgres if desired.
+```
+
+## Known limitations
+
+- **No continuous telemetry pipeline.** Phase 8C / 21A collectors are one-shot scrapers triggered by an API call (or the bounded `--watch` loop). There is no daemon, no scheduler, no streaming, no SNMP trap listener, no syslog UDP receiver.
+- **No remediation execution.** By design, and pinned by AST scans. Approval is intent only.
+- **Local dev auth.** Phase 23 ships PBKDF2-SHA256 + bearer tokens stored in `localStorage` on the frontend. Production should swap in a real IdP (SSO / SAML / OAuth) and move tokens to HttpOnly cookies behind that.
+- **No multi-tenancy.** One operator pool, one incident namespace, one lab.
+- **Real-lab anomaly coverage is partial (4 of 8 rules).** R002 / R004 / R005 / R006 fire only against simulator data — the FRR lab doesn't produce route-withdrawal, packet-loss, latency, or ACL-deny signals natively.
+- **No vector RAG.** Runbook retrieval is in-process keyword scoring (title 2× / body 1×, alpha tie-break). Good enough for 5 bundled runbooks; would need pgvector + embeddings to scale.
+- **macOS bash 3.2 portability for lab.sh.** `declare -A` is replaced with case-statement functions; tested via the `test_lab.sh` smoke.
+- **Out-of-the-box demo data is fabricated.** The simulator's 5 scenarios are hand-written. Treat as fixtures, not production telemetry.
+
+## Future work
+
+- Real authentication via SSO / SAML / OAuth + RBAC granularity beyond admin / operator.
+- Multi-tenancy + per-tenant device inventory.
+- Production deployment (Kubernetes + Helm chart; Prometheus / Grafana / OpenTelemetry observability).
+- Continuous telemetry ingest (real SNMP poller + syslog UDP receiver + streaming gNMI) writing into the existing `telemetry_observations` table.
+- Vector RAG over runbooks / device configs / historical incidents (pgvector + embeddings).
+- Batfish-based pre-deployment validation; Terraform / OpenTofu for IaC.
+- Containerlab / Lima topology when veth pairs, L2 trunking, or multi-vendor images are needed.
+- Optional gated execution path with explicit change-window controls + automatic rollback if post-checks fail.
+
+## Repo layout
+
+```
+backend/    FastAPI app (Python 3.12, managed with uv)
+frontend/   Vite + React + TS console (managed with pnpm)
+infra/      Docker support: Postgres init.sql, lab Compose stack, lab.sh helper
+docs/       architecture.md, roadmap.md
+docker-compose.yml
+.env.example
+```
 
 ## License & status
 
-Pre-alpha, open-source. Phases 1–8C implemented (scaffold, schema, simulator, anomaly engine, deterministic LangGraph orchestration, local-Ollama RCA explanation with deterministic fallback, plan-only remediation drafts with approval + rollback, Compose FRR network lab + one-shot BGP collector). Not yet usable for real network operations — no continuous telemetry pipeline, no remediation execution, no production lab.
+Open-source, pre-alpha. Phases 1–23 implemented; Phase 24 is documentation finish. Not yet a production NetOps tool — no continuous telemetry pipeline, no remediation execution path, local dev auth only. Suitable as a working portfolio demonstration of safety-first agentic NetOps architecture.
