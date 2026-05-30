@@ -50,8 +50,8 @@ Endpoints:
 - `POST /api/rca/incidents/{id}/explain[?model=…&require_llm=true]` — Phase 6 RCA explanation (Ollama-backed when reachable, deterministic fallback otherwise; 503 if `require_llm=true` and Ollama is down)
 - `POST /api/remediation/incidents/{id}/plan` — generate **and persist** a Phase 7 draft `RemediationPlan` (404 if incident missing)
 - `GET /api/remediation/incidents/{id}/plans?limit=20` — list previously persisted plans for an incident, newest first (404 if incident missing)
-- `POST /api/remediation/recommendations/{id}/approve` — Phase 10A: record approval intent on a remediation plan. Body `{operator_name, note?}`. 404 if missing, 400 if recommendation_type ≠ `remediation_plan`. **Records intent only — no execution.**
-- `POST /api/remediation/recommendations/{id}/reject` — same shape, marks rejected.
+- `POST /api/remediation/recommendations/{id}/approve` — record approval intent on a remediation plan. Body: **exactly one** of `{operator_id, note?}` (Phase 13A — resolves to an Operator row + audit FK) or `{operator_name, note?}` (legacy free-form string, Phase 10A). 404 if recommendation missing, 400 if recommendation_type ≠ `remediation_plan`, 404 if `operator_id` is unknown, 422 if neither / both identity fields supplied. **Records intent only — no execution.**
+- `POST /api/remediation/recommendations/{id}/reject` — same body shape, marks rejected.
 - `POST /api/lab/collect/bgp` — Phase 8C: one-shot BGP collection from the Compose FRR lab (writes one tagged `Incident` + per-peer events; requires the Phase 8B lab to be running)
 - `GET /api/operators` — Phase 13A: list operators (minimal dev/local identity rows)
 - `POST /api/operators` — create an operator (409 on duplicate `display_name`)

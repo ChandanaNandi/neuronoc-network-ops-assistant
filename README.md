@@ -2,15 +2,21 @@
 
 NeuroNOC is an open-source multi-agent AI NetOps platform for network anomaly detection, root-cause analysis, validation, and remediation planning.
 
-## Phase 13A scope *(current)*
+## Phase 13B scope *(current)*
 
-**Minimal local operator identity.** Adds an `operators` table (id, display_name unique, role default `operator`, created_at — **no passwords, no tokens, no sessions**) so approval actions can be attributed to a known operator row rather than a free-form string. The approval endpoint now accepts either `operator_id` (resolves to an Operator row, sets `approved_by_operator_id` FK for audit) or the legacy `operator_name` string (still works for CLI / script callers).
+**Local operator management UI** on top of the Phase 13A backend identity foundation. A compact `Operators` strip in the console lists existing operator rows (`display_name`, role chip, relative-age timestamp) and exposes a small inline create form (display_name + role select), so a fresh dev install no longer needs the CLI seed to start attributing approvals.
 
-- New migration `33112e9b5b1c` adds the `operators` table + `recommendations.approved_by_operator_id` nullable FK (ON DELETE SET NULL so deleting an operator preserves historical approvals).
-- API: `GET /api/operators` (list), `POST /api/operators` (create; 409 on duplicate name).
+- New `OperatorsPanel` component in the operator console. Operators state is lifted to `App` so the create form and the approval-form dropdown share a single source of truth — newly-created operators appear in the dropdown immediately, no page reload.
+- Duplicate `display_name` from the UI surfaces the backend 409 as an inline `role="alert"` error; the form stays open with the typed value intact.
+- **Still not production auth.** Same Phase 13A guardrails apply: no passwords, no tokens, no sessions, no JWT/OAuth/SSO, no RBAC enforcement; `role` is advisory only.
+- **No backend code changes, no migration, no new endpoints.** Phase 13B is frontend-only on top of the `GET /api/operators` and `POST /api/operators` endpoints shipped in Phase 13A.
+
+### Phase 13A — backend foundation (now ✓)
+
+- Migration `33112e9b5b1c` added an `operators` table (id, display_name unique + indexed, role default `operator`, created_at) and a nullable `recommendations.approved_by_operator_id` FK (ON DELETE SET NULL) so historical approvals survive operator deletion.
+- API: `GET /api/operators`, `POST /api/operators` (409 on duplicate `display_name`).
 - Idempotent seed CLI: `uv run python -m app.operators.seed --name local-operator --role admin`.
-- **Not production auth.** No password storage, no JWT, no OAuth, no SSO, no session, no RBAC enforcement anywhere. The `role` column is advisory; nothing checks it yet.
-- UI: approval form gains an operator dropdown populated from `/api/operators`. If the operator list is empty or fails to load, the form falls back to the existing free-form name input.
+- Approval payload accepts **either** `operator_id` (resolves to display_name + FK) **or** legacy `operator_name` (string verbatim, no FK). Exactly one required (XOR enforced at both schema + planner-helper layers); 422 if neither or both, 404 if `operator_id` is unknown.
 
 ## Phase 10A scope
 

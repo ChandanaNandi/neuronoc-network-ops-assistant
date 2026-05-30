@@ -1,6 +1,6 @@
 # NeuroNOC frontend
 
-Vite + React + TypeScript operator console for the NeuroNOC backend. As of Phase 9B the console renders incidents, anomaly findings, events, evidence, agent runs, RCA explanations, and remediation plans, and exposes action buttons that hit the backend live.
+Vite + React + TypeScript operator console for the NeuroNOC backend. The console renders incidents, anomaly findings, events, evidence, agent runs, RCA explanations, and remediation plans; exposes action buttons that hit the backend live; supports inline-form plan approval/rejection (Phase 10B) attributed to a managed operator dropdown (Phase 13A/B) with a legacy free-form name fallback.
 
 ## Setup
 
@@ -121,15 +121,18 @@ pnpm test:e2e              # headless
 pnpm test:e2e:headed       # watch it in a real window
 ```
 
-What it covers (7 tests, serial, single worker):
+What it covers (8 tests, serial, single worker):
 
 1. App loads and all 5 status cards render.
 2. Incident list renders the 5 seeded scenarios.
 3. BGP incident detail shows findings, events, evidence, and human-readable evidence refs (`evt:` / `ev:`).
 4. `Run agent analysis` adds a new agent-run card.
 5. `Generate remediation plan` adds a new plan card.
-6. Approve a plan via the native `window.prompt` flow and verify the approved badge + operator + note land on the card.
-7. `Generate RCA` shows an RCA explanation and the section survives once it appears (live Ollama or deterministic fallback, both fine).
+6. **Phase 13B:** create an operator via the `Operators` management panel, assert the chip carries role + a created_at signal, assert a duplicate `display_name` produces a `role="alert"` 409 error, then approve a plan via the operator dropdown using the just-created operator.
+7. Approve a plan via the inline form (Phase 10B) using the pre-seeded `local-operator` and verify the approved badge + operator + note land on the card.
+8. `Generate RCA` shows an RCA explanation and the section survives once it appears (live Ollama or deterministic fallback, both fine).
+
+The suite uses real backend / real Postgres / real Vite proxy — no mocks. UI-created `e2e-ui-op-…` operator rows accumulate in the dev DB across runs; see "UI-created operators accumulate" under the demo flow for the optional cleanup recipe.
 
 Prerequisites the suite assumes:
 
