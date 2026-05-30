@@ -759,6 +759,96 @@
   font-style: italic;
 }
 
+/* Phase 17B runbook search panel — mirrors the OperatorsPanel layout. */
+
+.runbooks-panel {
+  margin: 0 1.5rem 0.75rem;
+  background: #151a21;
+  border: 1px solid #1f242b;
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+}
+
+.runbooks-panel__header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.runbooks-panel__title {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #8b95a3;
+}
+
+.runbooks-panel__input {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.runbooks-panel__caveat {
+  font-size: 0.7rem;
+  font-style: italic;
+  margin-left: auto;
+}
+
+.runbooks-panel__error {
+  margin-top: 0.5rem;
+  font-size: 0.78rem;
+}
+
+.runbooks-panel__results {
+  margin-top: 0.6rem;
+}
+
+.runbook-hits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.runbook-hit {
+  padding: 0.45rem 0.6rem;
+  background: #0f1219;
+  border: 1px solid #1c2230;
+  border-radius: 6px;
+}
+
+.runbook-hit__head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.runbook-hit__title {
+  font-size: 0.85rem;
+}
+
+.runbook-hit__path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+}
+
+.runbook-hit__score {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.runbook-hit__excerpt {
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+  color: #c8d1dc;
+}
+
 .run-card__report,
 .plan-card__details {
   margin: 0.5rem 0 0 0;

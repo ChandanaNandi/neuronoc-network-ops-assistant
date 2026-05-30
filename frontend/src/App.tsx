@@ -9,6 +9,7 @@ import {
 import { IncidentDetail } from './components/IncidentDetail'
 import { IncidentList } from './components/IncidentList'
 import { OperatorsPanel } from './components/OperatorsPanel'
+import { RunbooksPanel } from './components/RunbooksPanel'
 import { StatusGrid } from './components/StatusGrid'
 
 export default function App() {
@@ -121,6 +122,8 @@ export default function App() {
         operators={operators}
         onRefresh={refreshOperators}
       />
+
+      <RunbooksPanel selectedIncidentId={selectedId} />
 
       <main className="app__main">
         <IncidentList

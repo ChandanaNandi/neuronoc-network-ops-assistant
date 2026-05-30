@@ -155,6 +155,18 @@ export interface RemediationPlan {
   confidence: number
 }
 
+// Phase 17A scored runbook hit from `GET /api/runbooks/search`. Mirrors
+// `RunbookHit` in backend/app/schemas/runbooks.py. The backend returns
+// only the bounded ~280-char excerpt, never the full Markdown file - the
+// UI must not try to render anything bigger.
+export interface RunbookHit {
+  slug: string
+  title: string
+  score: number
+  excerpt: string
+  path: string
+}
+
 // Phase 16A read-only validation surface for a persisted remediation plan.
 // Mirrors `ValidationPreviewRead` in backend/app/schemas/validation.py.
 // `executable` is hard-pinned to false on the backend Pydantic side
@@ -322,6 +334,21 @@ export const api = {
     request<ValidationPreview>(
       `/api/validation/recommendations/${recommendationId}/preview`,
     ),
+
+  // Phase 17A deterministic keyword search over bundled runbooks.
+  // At least one of q / incident_id must be supplied (the backend returns
+  // 400 otherwise); 404 if incident_id is unknown.
+  searchRunbooks: (params: {
+    q?: string
+    incident_id?: string
+    limit?: number
+  }): Promise<RunbookHit[]> => {
+    const qs = new URLSearchParams()
+    if (params.q) qs.set('q', params.q)
+    if (params.incident_id) qs.set('incident_id', params.incident_id)
+    if (params.limit !== undefined) qs.set('limit', String(params.limit))
+    return request<RunbookHit[]>(`/api/runbooks/search?${qs.toString()}`)
+  },
 }
 
 // ----- small utils for the UI -----

@@ -382,6 +382,72 @@ test('Approve a plan via the inline form shows approved badge + operator + note'
   await expect(newest.locator('.approval-form')).toHaveCount(0)
 })
 
+test('Runbook search returns BGP runbook for a BGP query and via Use selected incident', async ({
+  page,
+}) => {
+  await page.goto('/')
+  const panel = page.locator('.runbooks-panel')
+  await expect(panel).toBeVisible()
+
+  // Search button is disabled until the input has non-empty trimmed text.
+  const searchBtn = panel.getByRole('button', { name: /^Search$/i })
+  await expect(searchBtn).toBeDisabled()
+  await panel.getByLabel('runbook search query').fill('   ')
+  await expect(searchBtn).toBeDisabled() // whitespace-only stays disabled
+  await panel.getByLabel('runbook search query').fill('bgp neighbor')
+  await expect(searchBtn).toBeEnabled()
+  await searchBtn.click()
+
+  // BGP runbook is the top hit for a BGP-shaped query.
+  const firstHit = panel.locator('.runbook-hit').first()
+  await expect(firstHit).toBeVisible({ timeout: 5_000 })
+  await expect(firstHit.locator('.runbook-hit__title')).toContainText(/BGP/i)
+  await expect(firstHit.locator('.runbook-hit__path')).toContainText('bgp.md')
+  await expect(firstHit.locator('.runbook-hit__score')).toContainText(/score \d/)
+
+  // Phase 17B contract: render only the bounded excerpt, never the full file.
+  // bgp.md's "Reload the router" line sits near the end of the file (~chars
+  // 1300+); the bundled excerpt cuts off well before it. If a future change
+  // accidentally swaps the excerpt for the full file body, this fails.
+  const excerptText = (
+    await firstHit.locator('.runbook-hit__excerpt').textContent()
+  ) ?? ''
+  expect(excerptText.length).toBeLessThan(400)
+  expect(excerptText).not.toContain('Reload the router')
+
+  // "Use selected incident" button: disabled until an incident is selected.
+  const useIncidentBtn = panel.getByRole('button', {
+    name: /Use selected incident/i,
+  })
+  await expect(useIncidentBtn).toBeDisabled()
+
+  // Select the BGP incident, then derive the search from it.
+  await page
+    .locator('button.incident-row', { hasText: BGP_TITLE_PATTERN })
+    .click()
+  await expect(
+    page.getByRole('heading', { name: /Anomaly findings/i }),
+  ).toBeVisible()
+  await expect(useIncidentBtn).toBeEnabled()
+  await useIncidentBtn.click()
+
+  // Incident-derived search must surface the BGP runbook first.
+  await expect(panel.locator('.runbook-hit').first()).toBeVisible({
+    timeout: 5_000,
+  })
+  await expect(
+    panel.locator('.runbook-hit').first().locator('.runbook-hit__title'),
+  ).toContainText(/BGP/i)
+
+  // Empty-state path: a query that matches nothing renders the muted note.
+  await panel.getByLabel('runbook search query').fill('zzzqqq nopematch')
+  await searchBtn.click()
+  await expect(panel.locator('.runbooks-panel__results')).toContainText(
+    /No runbook matched/i,
+    { timeout: 5_000 },
+  )
+})
+
 test('Generate RCA shows the RCA section and it persists past the response', async ({
   page,
 }) => {

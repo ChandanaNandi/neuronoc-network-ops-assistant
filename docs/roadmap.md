@@ -199,7 +199,7 @@ Conventions:
 - Existing Approve/Reject behavior is unaffected; the operator strip, approval form, and Phase 15B inspector are untouched.
 - Same guardrails as every prior phase — no backend change, no schema, no migration, no dependency, no execution path, no device contact, no auth/RBAC, no LLM behavior change.
 
-## Phase 17A — Lightweight runbook retrieval index *(current)*
+## Phase 17A — Lightweight runbook retrieval index ✓
 
 - **Deterministic keyword retrieval, NOT vector RAG yet.** No embeddings, no pgvector, no Ollama dependency, no network calls — the scorer is the same in-process `retrieve_runbooks` from Phase 6 (`app/knowledge/retriever.py`).
 - Tiny extension to the Phase 6 retriever: `RetrievedRunbook` gains a `path` field (relative filename inside `app/knowledge/runbooks/`, e.g. `bgp.md`). One-line dataclass addition + one construction-site update. RCA reads only `.title` / `.name` / `.score` / `.snippet`, so this is fully backward-compatible.
@@ -211,6 +211,18 @@ Conventions:
 - **RCA integration left untouched on purpose.** The Phase 6 RCA explainer (`app/rca/explainer.py`) already calls `retrieve_runbooks(...)` cleanly with its own `_retrieval_query()` builder; rewriting that to go through the new HTTP layer would add a roundtrip with no quality gain and would couple RCA to its own router. The Phase 17A endpoint is purely an operator-facing surface.
 - Tests: 17 new in `test_runbooks.py` covering loader (every bundled runbook present), the new `path` field, BGP-query → bgp.md ordering, limit, empty/no-match → `[]`, all four API entry points (`q` only, `incident_id` only, both combined, no-match returns `[]`), and the 400/404/422 error surface.
 - Same guardrails as every prior phase — no schema migration, no dependency added, no LLM behavior change, no remediation execution path, no device connection, no auth/RBAC, no frontend code touched.
+
+## Phase 17B — Runbook search UI panel *(current)*
+
+- **Deterministic keyword search UI, NOT vector RAG.** Frontend-only consumer of the Phase 17A `GET /api/runbooks/search` endpoint; no embeddings, no LLM, no full-file fetch.
+- New TS type `RunbookHit` (mirrors backend `RunbookHit` schema) and `api.searchRunbooks({q?, incident_id?, limit?})` wrapper.
+- New `RunbooksPanel` component lives between `OperatorsPanel` and the master/detail in `App.tsx`. Search input, `Search` button (disabled when `q.trim()` is empty), `Use selected incident` button (disabled until an incident is selected). Enter in the input also triggers a search.
+- App passes `selectedIncidentId` down so `Use selected incident` forwards the id and the backend derives the query from the incident row's `title + incident_type + summary` (no agent-run side effect).
+- Render contract: title, file path (`<slug>.md`), score, and the bundled ~280-char `excerpt` only. **The full Markdown body is never fetched or rendered** — the panel reads ONLY what the API returns, and the API ships only the bounded excerpt. The Playwright assertion pins the excerpt's length (`<400` chars) AND the absence of a unique string from later in `bgp.md` (`Reload the router`); any future regression that leaked the full file body would fail CI.
+- Distinct null vs `[]` results state surfaces a clean empty-state message ("No runbook matched ..."), and 400/404/422 errors render inline via `role="alert"`.
+- **Caching skipped on purpose.** The panel's dominant interaction is "type new query" / "click new incident" — not toggle, like Phase 16B's validation preview. A cache would add state without paying for itself; if the operator wants the same result again, the round-trip is one cheap GET against the in-process Phase 17A scorer.
+- Existing components (OperatorsPanel, IncidentList, IncidentDetail, agent run inspector, validation preview block) are untouched.
+- Same guardrails — no backend change, no schema, no migration, no dependency, no execution path, no device contact, no auth/RBAC, no LLM behavior change.
 
 ## Beyond
 
