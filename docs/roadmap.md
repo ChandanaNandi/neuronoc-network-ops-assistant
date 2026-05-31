@@ -483,7 +483,7 @@ Conventions:
 - **Backward compatibility honest, not bypassed**: existing non-approval APIs remain unauthenticated. Bearer tokens are accepted everywhere but ignored where auth isn't required. Legacy approval body fields are deliberately broken with 422 so stale callers fail loudly rather than silently bypassing auth.
 - Same guardrails as every prior phase — no LLM behavior change, no remediation execution, no telemetry/lab feature work, no external auth provider, no new pip dependency.
 
-## Phase 24 — Final packaging + demo readiness *(current)*
+## Phase 24 — Final packaging + demo readiness ✓
 
 - **Documentation-only finish phase — no application behavior change.** Brings every README and the roadmap up to date so a fresh reader (or a recruiter following the demo checklist) can land on the repo and run the full real-lab → snapshot → agent → RCA → plan → admin-approve flow without hitting a stale instruction.
 - Top-level `README.md` rewritten from the Phase 13B-era scope-section format into a finished portfolio README: what NeuroNOC is, the problem it addresses, the safety-first thesis, the real-vs-simulator data distinction, a Mermaid architecture diagram (React console → FastAPI backend → Postgres / Ollama / FRR lab, with the admin approval gate called out), the main user flow, the current feature set by phase, local run, test commands, a 16-step recruiter demo checklist (start Postgres → seed → start backend / frontend / lab → inject fault with `lab.sh` → collect snapshot → inspect findings → run agent analysis → generate RCA → generate plan → log in as admin → approve / reject → show no execution → heal → tear down), known limitations, future work.
@@ -493,20 +493,31 @@ Conventions:
 - `docs/roadmap.md` updated: Phase 23 marked ✓, Phase 24 added as *(current)*, project status summary appended below.
 - **Hard constraints honored**: no product features added, no backend capabilities added, no frontend capabilities added (no broken documented demo path was found, so zero application code changed), no schema migrations, no new dependencies, no split into 24A/24B.
 
+## Phase 25 — Network runbook RAG + vector retrieval *(current)*
+
+- **Backend RAG layer for Qualcomm GenAI alignment.** Adds embedding-backed retrieval over the bundled Markdown runbooks and feeds cited chunks into the RCA prompt. This addresses RAG architecture, vector search, embedding models, evaluation, and domain-specific LLM grounding without changing the remediation execution contract.
+- **Dependencies added**: `sentence-transformers` and `faiss-cpu`. FAISS is the vector index. The embedding layer supports Sentence Transformers when `RAG_EMBEDDING_BACKEND=sentence-transformers` and `RAG_EMBEDDING_MODEL` is available; default local dev/CI uses a deterministic hashing embedder so tests never download a model.
+- **New module** `app/knowledge/rag.py`: loads Markdown runbooks, splits them into bounded chunks, embeds title+chunk text, builds an in-memory FAISS `IndexFlatIP`, and returns `RagRunbookHit` rows with `citation_id` values like `bgp.md#chunk-1`.
+- **RCA grounding upgrade**: `generate_rca_explanation()` now retrieves RAG chunks instead of the keyword runbook list. `RCAExplanation` includes `citations` and `retrieval_backend`, and the prompt passes citation ids into the LLM context. The deterministic fallback also returns citations.
+- **New runbook endpoints**: `GET /api/runbooks/rag/search` returns cited vector hits; `GET /api/runbooks/rag/evaluate` runs the bundled evaluation set.
+- **Evaluation set**: five network scenarios (BGP, interface errors, latency/loss, route missing, ACL deny) measure top-k retrieval accuracy, source coverage, citation coverage, answer-faithfulness proxy, and latency. Tests pin `top_k_accuracy == 1.0` for the bundled corpus at `top_k=3`.
+- **Existing keyword search preserved**: `GET /api/runbooks/search` remains deterministic keyword search for the current UI. No frontend change in this phase.
+- **Guardrails preserved**: no remediation execution, no device contact, no schema migration, no background indexing daemon, no cloud LLM dependency. Sentence Transformers use is opt-in at runtime; local fallback keeps CI deterministic.
+
 ## Project status summary
 
-NeuroNOC is feature-complete through Phase 23 as a portfolio-scale demonstration of safety-first agentic NetOps. The implementation spans:
+NeuroNOC is feature-complete through Phase 25 as a portfolio-scale demonstration of safety-first agentic NetOps. The implementation spans:
 
 - **Data plane**: Postgres 16 schema (5 incident-related tables + `operators` / `operator_sessions` / `agent_runs` / `agent_steps` / `telemetry_observations`), 6 Alembic migrations on linear ancestry (head: `466922adacef`).
-- **Backend**: FastAPI + SQLAlchemy 2 + psycopg 3, **268 pytest tests** passing, AST safety scans pinning the no-execution / no-network contracts on `app/remediation/`, `app/validation/`, `app/telemetry/`.
-- **Agent layer**: deterministic 6-node LangGraph workflow + 8 deterministic anomaly rules (R001–R008) + optional Ollama RCA (`qwen2.5:7b-instruct`) with a deterministic fallback.
+- **Backend**: FastAPI + SQLAlchemy 2 + psycopg 3, pytest coverage across API, RAG, RCA, auth, telemetry, lab, and remediation safety contracts; AST safety scans pinning the no-execution / no-network contracts on `app/remediation/`, `app/validation/`, `app/telemetry/`.
+- **Agent layer**: deterministic 6-node LangGraph workflow + 8 deterministic anomaly rules (R001–R008) + optional Ollama RCA (`qwen2.5:7b-instruct`) grounded in cited runbook RAG chunks, with a deterministic fallback.
 - **Lab**: 4-router FRR v8.4.1 Compose stack with read-only snapshot collector (BGP + interfaces + route table + running-config), `lab.sh inject` / `heal` fault-injection helper covering `bgp-down` and `iface-down` per canonical-peer mapping.
 - **Frontend**: Vite + React + TS strict, **25 Playwright e2e tests** (Chromium, serial, `retries: 0`), the full operator console (status grid, master/detail, agent run inspector, validation preview, runbook search, telemetry preview with 5 fixtures + sanitized export, login panel, operator management, plan cards with approval).
 - **Auth**: PBKDF2-SHA256 (600k iterations, OWASP 2023 floor), bearer-token sessions in `operator_sessions`, FastAPI `Depends(require_role("admin"))` gating remediation approval.
 - **CI**: GitHub Actions runs backend / frontend / e2e against a Postgres 16 service container on every push; Playwright captures retain-on-failure traces.
 - **Honest scope boundaries** documented end-to-end: 4 of 8 anomaly rules covered by real lab data; remediation is plan-only by hard contract; local dev auth, not production-grade; no continuous telemetry pipeline.
 
-The codebase is suitable as a working demonstration of agentic NetOps thinking with explicit safety contracts. It is intentionally not yet a production NetOps tool — see the "Future work" section of the top-level README for the next-frontier items (real IdP integration, continuous telemetry ingest, vector RAG, Kubernetes deployment).
+The codebase is suitable as a working demonstration of agentic NetOps thinking with explicit safety contracts. It is intentionally not yet a production NetOps tool — see the "Future work" section of the top-level README for the next-frontier items (real IdP integration, continuous telemetry ingest, broader RAG corpora, Kubernetes deployment).
 
 ## Beyond
 
@@ -515,5 +526,5 @@ The codebase is suitable as a working demonstration of agentic NetOps thinking w
 - Production deployment (Kubernetes + Helm).
 - Observability (Prometheus, Grafana, OpenTelemetry).
 - Batfish-based validation, Terraform / OpenTofu for IaC.
-- Vector RAG over runbooks / device configs / past incidents (pgvector + embeddings).
+- Extend RAG to device configs / past incidents and pgvector-backed storage if the Postgres image gains the extension.
 - Continuous telemetry ingest (real collector, not the Phase 8C one-shot scraper).

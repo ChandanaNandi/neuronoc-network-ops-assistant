@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     )
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5:7b-instruct"
+    RAG_EMBEDDING_BACKEND: str = "local"
+    RAG_EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 settings = Settings()

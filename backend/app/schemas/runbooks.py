@@ -18,3 +18,36 @@ class RunbookHit(BaseModel):
     score: float = Field(ge=0.0)
     excerpt: str  # first ~280 chars of the runbook body
     path: str  # filename inside app/knowledge/runbooks/, e.g. "bgp.md"
+
+
+class RunbookRagHit(BaseModel):
+    """One embedding/FAISS-backed runbook chunk hit."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slug: str
+    title: str
+    score: float
+    excerpt: str
+    path: str
+    chunk_index: int
+    citation_id: str
+    embedding_backend: str
+    embedding_model: str
+
+
+class RunbookRagEvaluationRead(BaseModel):
+    """Small retrieval-quality evaluation summary for the bundled runbooks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    case_count: int
+    top_k: int
+    top_k_accuracy: float
+    source_coverage: float
+    citation_coverage: float
+    answer_faithfulness_proxy: float
+    average_latency_ms: float
+    embedding_backend: str
+    embedding_model: str
+    failures: list[dict]

@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.knowledge.rag import retrieve_runbook_chunks
 from app.knowledge.retriever import retrieve_runbooks
 from app.llm.ollama import OllamaUnavailableError
 from app.rca import explainer as explainer_module
@@ -56,7 +57,7 @@ def test_build_rca_prompt_constrains_to_provided_evidence() -> None:
         "requires_human_review": True,
         "confidence": 0.95,
     }
-    runbooks = retrieve_runbooks("bgp_neighbor_down", limit=2)
+    runbooks = retrieve_runbook_chunks("bgp_neighbor_down", limit=2)
     prompt = build_rca_prompt(report, runbooks)
 
     lowered = prompt.lower()
@@ -64,6 +65,7 @@ def test_build_rca_prompt_constrains_to_provided_evidence() -> None:
     assert "bgp_neighbor_down" in prompt
     # The runbook must end up in the prompt body.
     assert any(rb.title.lower() in lowered or rb.name in prompt for rb in runbooks)
+    assert any(rb.citation_id in prompt for rb in runbooks)
 
 
 # ---------- generate_rca_explanation ----------
@@ -91,6 +93,8 @@ def test_fallback_when_ollama_unavailable(
     assert explanation.likely_root_cause  # populated from deterministic report
     assert explanation.recommended_next_steps  # carried over from report
     assert explanation.unsafe_actions, "fallback must always include guardrails"
+    assert explanation.citations
+    assert explanation.retrieval_backend
 
 
 def test_require_llm_true_raises_when_unavailable(
@@ -143,6 +147,8 @@ def test_uses_mocked_ollama_json_when_available(
     assert explanation.confidence == pytest.approx(0.78)
     assert any("198.51.100.0/24" in e for e in explanation.supporting_evidence)
     assert "BGP" in explanation.runbook_references[0]
+    assert explanation.citations
+    assert explanation.citations[0].citation_id
 
 
 def test_server_owned_keys_in_llm_response_are_ignored(

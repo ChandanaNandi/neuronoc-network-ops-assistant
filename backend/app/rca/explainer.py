@@ -30,13 +30,23 @@ from app.anomaly.engine import IncidentNotFoundError
 from app.core.config import settings
 from app.db.models import AgentRun, Incident
 from app.db.session import SessionLocal
-from app.knowledge.retriever import RetrievedRunbook, retrieve_runbooks
+from app.knowledge.rag import RagRunbookHit, retrieve_runbook_chunks
 from app.llm.ollama import OllamaUnavailableError, generate_ollama_json
 
 UNSAFE_DEFAULT = (
     "Do not execute remediation actions automatically; every change requires "
     "explicit human approval and a documented rollback plan."
 )
+
+
+class RCACitation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    citation_id: str
+    title: str
+    path: str
+    snippet: str
+    score: float
 
 
 class RCAExplanation(BaseModel):
@@ -49,6 +59,8 @@ class RCAExplanation(BaseModel):
     runbook_references: list[str] = Field(default_factory=list)
     recommended_next_steps: list[str] = Field(default_factory=list)
     unsafe_actions: list[str] = Field(default_factory=list)
+    citations: list[RCACitation] = Field(default_factory=list)
+    retrieval_backend: str | None = None
     confidence: float = Field(ge=0.0, le=1.0)
     model: str | None = None
     llm_available: bool
@@ -97,14 +109,19 @@ Return JSON only.
 
 
 def build_rca_prompt(
-    report: dict[str, Any], runbooks: list[RetrievedRunbook]
+    report: dict[str, Any], runbooks: list[RagRunbookHit]
 ) -> str:
     """Build the prompt sent to Ollama. Includes the constraint that the model
     must use only provided evidence and runbook snippets."""
     report_block = json.dumps(report, indent=2, sort_keys=True)
     if runbooks:
         runbook_block = "\n\n".join(
-            f"## {rb.title} (id: {rb.name}, score: {rb.score})\n{rb.snippet}"
+            (
+                f"## {rb.title} "
+                f"(id: {getattr(rb, 'citation_id', rb.name)}, "
+                f"score: {rb.score:.3f})\n"
+                f"{rb.snippet}"
+            )
             for rb in runbooks
         )
     else:
@@ -154,7 +171,7 @@ def _retrieval_query(report: dict[str, Any]) -> list[str]:
 def _fallback_explanation(
     incident_id: UUID,
     report: dict[str, Any],
-    runbooks: list[RetrievedRunbook],
+    runbooks: list[RagRunbookHit],
 ) -> RCAExplanation:
     """Build an RCAExplanation purely from the Phase 5 report - no LLM."""
     findings = list(report.get("key_findings", []) or [])
@@ -181,13 +198,35 @@ def _fallback_explanation(
             or "Insufficient signal for a deterministic root cause."
         ),
         supporting_evidence=impacts,
-        runbook_references=[rb.title or rb.name for rb in runbooks],
+        runbook_references=[rb.citation_id for rb in runbooks],
         recommended_next_steps=list(report.get("recommended_next_steps", []) or []),
         unsafe_actions=[UNSAFE_DEFAULT],
+        citations=_citations_from_runbooks(runbooks),
+        retrieval_backend=_retrieval_backend_label(runbooks),
         confidence=float(report.get("confidence", 0.0) or 0.0),
         model=None,
         llm_available=False,
     )
+
+
+def _citations_from_runbooks(runbooks: list[RagRunbookHit]) -> list[RCACitation]:
+    return [
+        RCACitation(
+            citation_id=rb.citation_id,
+            title=rb.title,
+            path=rb.path,
+            snippet=rb.snippet,
+            score=rb.score,
+        )
+        for rb in runbooks
+    ]
+
+
+def _retrieval_backend_label(runbooks: list[RagRunbookHit]) -> str | None:
+    if not runbooks:
+        return None
+    first = runbooks[0]
+    return f"{first.embedding_backend}:{first.embedding_model}"
 
 
 # ---------- main entry point ----------
@@ -210,7 +249,7 @@ def generate_rca_explanation(
         raise IncidentNotFoundError(f"incident {incident_id} not found")
 
     report = _load_or_run_report(db, incident_id)
-    runbooks = retrieve_runbooks(_retrieval_query(report), limit=3)
+    runbooks = retrieve_runbook_chunks(_retrieval_query(report), limit=3)
     prompt = build_rca_prompt(report, runbooks)
     chosen_model = model or settings.OLLAMA_MODEL
 
@@ -233,6 +272,8 @@ def generate_rca_explanation(
             incident_id=incident_id,
             llm_available=True,
             model=chosen_model,
+            citations=_citations_from_runbooks(runbooks),
+            retrieval_backend=_retrieval_backend_label(runbooks),
             **raw,
         )
     except ValidationError as exc:

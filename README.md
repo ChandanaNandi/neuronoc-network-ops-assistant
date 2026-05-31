@@ -54,7 +54,8 @@ flowchart LR
         IncidentsAPI[Incidents / events / evidence]
         AnomalyEngine[Anomaly engine<br/>8 deterministic rules R001-R008]
         AgentWF[LangGraph workflow<br/>6 deterministic nodes]
-        RCAExp[RCA explainer<br/>+ keyword runbook retrieval]
+        RCAExp[RCA explainer<br/>+ RAG citations]
+        VectorRAG[Runbook RAG<br/>Sentence Transformers-ready embeddings<br/>FAISS vector search]
         Planner[Remediation planner<br/>6 templates · plan-only]
         ValidationAPI[Validation preview API<br/>pre/post checks, rollback, safety notes]
         TelemetryAPI[Telemetry observations API<br/>persist · list · correlate]
@@ -78,6 +79,7 @@ flowchart LR
 
     AnomalyEngine -. reads .-> PG
     RCAExp -. reads .-> PG
+    RCAExp -. retrieves .-> VectorRAG
     ValidationAPI -. reads .-> PG
 
     RCAExp -. optional .-> Ollama
@@ -97,7 +99,7 @@ Inject lab fault              →  Collect lab snapshot         →  Inspect fin
 
        ↓                                                              ↓
 
-Approve / reject as admin     ←  Generate remediation plan    ←  Generate RCA + runbook hits
+Approve / reject as admin     ←  Generate remediation plan    ←  Generate RCA + cited RAG context
 (bearer-token + role=admin)      (plan-only · requires_approval)  (Ollama or deterministic fallback)
 ```
 
@@ -185,6 +187,7 @@ The differentiating screen. Same plan id as #7, but a deliberately narrower API 
 | 22B | Telemetry → incident | `POST /api/telemetry/observations/{id}/correlate` — deterministic, idempotent, on-demand |
 | 23 | Auth + RBAC | PBKDF2-SHA256 passwords, bearer-token sessions, role-gated approval (admin only) |
 | 24 | Packaging + docs | This README, demo checklist, roadmap status summary |
+| 25 | Runbook RAG | Markdown runbook chunking, embedding search with FAISS, RCA citations, and a retrieval evaluation set |
 
 ## Prerequisites
 
@@ -382,7 +385,7 @@ Run this top-to-bottom for a live demo. Every step is one command or one click.
 - **Local dev auth.** Phase 23 ships PBKDF2-SHA256 + bearer tokens stored in `localStorage` on the frontend. Production should swap in a real IdP (SSO / SAML / OAuth) and move tokens to HttpOnly cookies behind that.
 - **No multi-tenancy.** One operator pool, one incident namespace, one lab.
 - **Real-lab anomaly coverage is partial (4 of 8 rules).** R002 / R004 / R005 / R006 fire only against simulator data — the FRR lab doesn't produce route-withdrawal, packet-loss, latency, or ACL-deny signals natively.
-- **No vector RAG.** Runbook retrieval is in-process keyword scoring (title 2× / body 1×, alpha tie-break). Good enough for 5 bundled runbooks; would need pgvector + embeddings to scale.
+- **RAG corpus is intentionally small.** Phase 25 adds embedding-backed retrieval over 5 bundled runbooks using FAISS, with a deterministic local embedding fallback for CI. Set `RAG_EMBEDDING_BACKEND=sentence-transformers` when a local Sentence Transformers model is available.
 - **macOS bash 3.2 portability for lab.sh.** `declare -A` is replaced with case-statement functions; tested via the `test_lab.sh` smoke.
 - **Out-of-the-box demo data is fabricated.** The simulator's 5 scenarios are hand-written. Treat as fixtures, not production telemetry.
 
@@ -392,7 +395,7 @@ Run this top-to-bottom for a live demo. Every step is one command or one click.
 - Multi-tenancy + per-tenant device inventory.
 - Production deployment (Kubernetes + Helm chart; Prometheus / Grafana / OpenTelemetry observability).
 - Continuous telemetry ingest (real SNMP poller + syslog UDP receiver + streaming gNMI) writing into the existing `telemetry_observations` table.
-- Vector RAG over runbooks / device configs / historical incidents (pgvector + embeddings).
+- Extend RAG beyond bundled runbooks to device configs / historical incidents, with pgvector if the Postgres image is upgraded to include the extension.
 - Batfish-based pre-deployment validation; Terraform / OpenTofu for IaC.
 - Containerlab / Lima topology when veth pairs, L2 trunking, or multi-vendor images are needed.
 - Optional gated execution path with explicit change-window controls + automatic rollback if post-checks fail.
@@ -410,4 +413,4 @@ docker-compose.yml
 
 ## License & status
 
-Open-source, pre-alpha. Phases 1–24 implemented. Current version is portfolio-ready / pre-alpha; not a production NetOps tool. No continuous telemetry pipeline, no remediation execution path, local dev auth only. Suitable as a working portfolio demonstration of safety-first agentic NetOps architecture.
+Open-source, pre-alpha. Phases 1–25 implemented. Current version is portfolio-ready / pre-alpha; not a production NetOps tool. No continuous telemetry pipeline, no remediation execution path, local dev auth only. Suitable as a working portfolio demonstration of safety-first agentic NetOps architecture.
